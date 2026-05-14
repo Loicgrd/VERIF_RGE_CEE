@@ -31,7 +31,7 @@ def fetch_ademe_data(siret):
         return []
 
 # --- INTERFACE ---
-st.title("🛡️ Audit RGE & Gestion des Certificats")
+st.title("🛡️ Vérification des RGE")
 
 date_eng = st.date_input("Date d'engagement des travaux :", datetime.now(), format="DD/MM/YYYY")
 
