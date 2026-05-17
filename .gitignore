@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+
+# Streamlit
+.streamlit/
+
+# Fichiers générés (Data)
+*.xlsx
+*.zip
+*.pdf
+
+# OS
+.DS_Store
