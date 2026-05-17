@@ -155,19 +155,20 @@ if 'audit_results' in st.session_state:
                 with c2: 
                     if info['status_rge']: st.success("✅ Valide")
                     else: st.error("❌ Expiré")
-                with c3: st.markdown(f"<div class='certif-info'><b>N° :</b> {info['n_certif']}<br><i>Fin : {info['fin'].strftime('%d/%m/%Y')}</i></div>", unsafe_allow_html=True)
+                with c3: st.markdown(f"<div class='certif-info'><b>N° certificat :</b> {info['n_certif']}<br><i>Fin de validité : {info['fin'].strftime('%d/%m/%Y')}</i></div>", unsafe_allow_html=True)
                 with c4: choix_bar = st.selectbox("F", options=get_cee_options(dom_sel), key=f"b_{res['SIRET']}_{dom_sel}_{i}", label_visibility="collapsed")
                 with c5:
                     if info['url']:
-                        st.markdown(f"[👁️ Voir PDF]({info['url']})", unsafe_allow_html=True)
+                        st.markdown(f"[👁️ Voir certificat]({info['url']})", unsafe_allow_html=True)
                         try:
                             content = requests.get(info['url'], timeout=5).content
                             ent_clean = res['Entreprise'].replace(" ", "_").replace("/", "-")
                             
-                            # Nom pour le téléchargement individuel
-                            nom_indiv = f"{dom_sel}-{ent_clean}.pdf"
+                            # --- MODIFICATION DU NOM DE FICHIER INDIVIDUEL ---
+                            ok_ko = "OK" if info['status_rge'] else "KO"
+                            nom_indiv = f"{choix_bar}-RGE-{ok_ko}.pdf"
                             
-                            # Nom spécifique pour le ZIP (avec STATUT)
+                            # Nom pour le ZIP (on garde l'ancien format pour le ZIP pour distinguer les entreprises)
                             statut_txt = "VALIDE" if info['status_rge'] else "EXPIRE"
                             nom_zip = f"{dom_sel}-{ent_clean}-{statut_txt}.pdf"
                             
