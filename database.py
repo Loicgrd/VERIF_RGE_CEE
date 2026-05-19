@@ -1,20 +1,25 @@
-# database.py
-import duckdb
+import pandas as pd
+import glob
 import streamlit as st
 
 def fetch_local_backup(siret):
-    """
-    Recherche un SIRET instantanément dans les fichiers découpés 
-    sans charger la RAM de Streamlit Cloud.
-    """
-    conn = duckdb.connect()
-    # L'étoile '*' permet à DuckDB de scanner part1 et part2 en même temps
-    query = f"SELECT * FROM 'rge_backup_part*.parquet' WHERE siret = '{siret}'"
+    siret = str(siret)
+    results = []
+    files = glob.glob("backup_ademe/rge_backup_part*.parquet")
     
-    try:
-        df_res = conn.execute(query).df()
-        # On convertit en liste de dictionnaires pour garder le format de l'ADEME
-        return df_res.to_dict(orient='records')
-    except Exception as e:
-        st.error(f"Erreur lors de la lecture de la base locale : {e}")
-        return []
+    for file in files:
+        try:
+            # On ne lit QUE la colonne 'siret' pour économiser la RAM
+            df = pd.read_parquet(file, columns=['siret'])
+            
+            # On cherche l'index des lignes qui correspondent
+            match_indices = df[df['siret'].astype(str) == siret].index
+            
+            if not match_indices.empty:
+                # Si trouvé, on relit le fichier COMPLET uniquement pour les lignes trouvées
+                full_df = pd.read_parquet(file)
+                results.extend(full_df.loc[match_indices].to_dict(orient='records'))
+        except Exception:
+            continue
+            
+    return results
