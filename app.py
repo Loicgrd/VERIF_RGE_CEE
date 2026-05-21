@@ -257,7 +257,7 @@ if 'audit_results' in st.session_state:
                             
                             # Téléchargement individuel : NOM_FICHE-RGE-OK/KO.pdf
                             ok_ko = "OK" if info['status_rge'] else "KO"
-                            nom_indiv = f"{choix_bar}-RGE-{ok_ko}.pdf"
+                            nom_indiv = f"{choix_bar}-RGE-{ok_ko} ({ent_clean}).pdf"
                             
                             # Téléchargement ZIP : DOMAINE-ENTREPRISE-STATUT.pdf
                             statut_txt = "VALIDE" if info['status_rge'] else "EXPIRE"
