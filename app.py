@@ -95,6 +95,30 @@ MAP_CEE = {
     "Forage géothermique": ["TH178"],
 }
 
+def consolider_periodes(results):
+    if not results:
+        return None
+    
+    # Conversion propre des dates pour comparaison
+    for r in results:
+        r['dateDebut'] = pd.to_datetime(r['dateDebutValidite'])
+        r['dateFin'] = pd.to_datetime(r['dateFinValidite'])
+    
+    # Tri temporel
+    results = sorted(results, key=lambda x: x['dateDebut'])
+    
+    # Algorithme de fusion
+    globale = results[0]
+    for p in results[1:]:
+        # Si la période suivante commence dans les 31 jours après la fin de la précédente
+        if p['dateDebut'] <= globale['dateFin'] + pd.Timedelta(days=31):
+            globale['dateFin'] = max(globale['dateFin'], p['dateFin'])
+        else:
+            # On s'arrête ici si il y a une vraie cassure dans la validité
+            break 
+            
+    return globale
+
 def extract_qualif_code(id_complet):
     if not id_complet or id_complet == "N/A": return "N/A"
     id_str = str(id_complet).strip()
@@ -245,7 +269,48 @@ if 'audit_results' in st.session_state:
                 with c2: 
                     if info['status_rge']: st.success("✅ Valide")
                     else: st.error("❌ Expiré")
-                with c3: st.markdown(f"<div class='certif-info'><b>N° :</b> {info['n_certif']}<br><i>Fin de validité : {info['fin'].strftime('%d/%m/%Y')}</i></div>", unsafe_allow_html=True)
+                
+                # --- CALCUL DE LA PÉRIODE CONSOLIDÉE (BLOC CONTINU) ---
+                debut_affiche = info['debut']
+                fin_affiche = info['fin']
+
+                if info['status_rge']:
+                    from datetime import timedelta
+                    # 1. Trier tout l'historique de ce domaine par date de début
+                    hist_trie = sorted(info['historique'], key=lambda x: x['lien_debut_regle'])
+
+                    # 2. Algorithme de fusion (on regroupe les périodes espacées de 31 jours ou moins)
+                    blocs = []
+                    bloc_actuel = [hist_trie[0]['lien_debut_regle'], hist_trie[0]['fin']]
+
+                    for h in hist_trie[1:]:
+                        if h['lien_debut_regle'] <= bloc_actuel[1] + timedelta(days=31):
+                            # Si ça se suit, on étend la date de fin du bloc
+                            bloc_actuel[1] = max(bloc_actuel[1], h['fin'])
+                        else:
+                            # S'il y a une vraie cassure, on sauvegarde le bloc et on en commence un nouveau
+                            blocs.append(bloc_actuel)
+                            bloc_actuel = [h['lien_debut_regle'], h['fin']]
+                    blocs.append(bloc_actuel)
+
+                    # 3. Trouver le bloc consolidé qui encadre notre date d'engagement
+                    for b in blocs:
+                        if b[0] <= date_eng <= b[1]:
+                            debut_affiche = b[0]
+                            fin_affiche = b[1]
+                            break
+
+                with c3:
+                    st.markdown(
+                        f"""
+                        <div class='certif-info'>
+                            <b>N° Certificat :</b> {info['n_certif']}<br>
+                            <i>Début : {debut_affiche.strftime('%d/%m/%Y')}</i><br>
+                            <i>Fin : {fin_affiche.strftime('%d/%m/%Y')}</i>
+                        </div>
+                        """, 
+                        unsafe_allow_html=True
+                    )
                 with c4: choix_bar = st.selectbox("F", options=get_cee_options(dom_sel), key=f"b_{res['SIRET']}_{dom_sel}_{i}", label_visibility="collapsed")
                 with c5:
                     if info['url']:
@@ -291,7 +356,16 @@ if 'audit_results' in st.session_state:
                                       legend=dict(orientation="h", yanchor="bottom", y=-0.4, xanchor="center", x=0.5))
                     st.plotly_chart(fig, use_container_width=True, key=f"fig_global_{res['SIRET']}_{i}")
 
-                excel_data.append({"SIRET": res['SIRET'], "Entreprise": res['Entreprise'], "Domaine": dom_sel, "Fiche": choix_bar, "Certificat": info['n_certif'], "RGE": "Valide" if info['status_rge'] else "Expiré"})
+                excel_data.append({
+                    "SIRET": res['SIRET'], 
+                    "Entreprise": res['Entreprise'], 
+                    "Domaine": dom_sel, 
+                    "Fiche": choix_bar, 
+                    "Certificat": info['n_certif'], 
+                    "Date de début": info['debut'].strftime('%d/%m/%Y'),
+                    "Date de fin": info['fin'].strftime('%d/%m/%Y'),
+                    "RGE": "Valide" if info['status_rge'] else "Expiré"
+                })
 
     # --- SÉCURITÉ ANTI-DUPLICATES DANS LE ZIP ---
     if excel_data:
