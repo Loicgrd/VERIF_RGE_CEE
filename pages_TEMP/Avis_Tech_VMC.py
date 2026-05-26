@@ -1,0 +1,1 @@
+#Appli permettant de vérifier si la VMC a un avis technique valide
