@@ -212,11 +212,7 @@ if 'audit_results' in st.session_state:
                             ent_clean = res['Entreprise'].replace(" ", "_").replace("/", "-")
                             ok_ko = "OK" if info['status_rge'] else "KO"
                             nom_indiv = f"{choix_bar}-RGE-{ok_ko} ({ent_clean}).pdf"
-<<<<<<< HEAD
-                            
-                            # Téléchargement ZIP : DOMAINE-ENTREPRISE-STATUT.pdf
-=======
->>>>>>> main
+
                             statut_txt = "VALIDE" if info['status_rge'] else "EXPIRE"
                             nom_zip = f"{dom_sel}-{ent_clean}-{statut_txt}.pdf"
                             st.download_button("📥 Télécharger", content, nom_indiv, "application/pdf", key=f"dl_{res['SIRET']}_{i}")
