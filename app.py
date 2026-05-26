@@ -5,9 +5,14 @@ import requests
 import io
 import zipfile
 import plotly.express as px
+import streamlit.components.v1 as components
+
 
 # --- IMPORT DU NOUVEAU CERVEAU ---
 from core.rge_api import get_cee_options, fetch_ademe_data, extract_qualif_code, clean_url
+from core.ia_extraction import analyze_documents
+
+
 
 # --- CONFIGURATION INITIALE ---
 st.set_page_config(page_title="Vérification des RGE", layout="wide")
@@ -25,28 +30,67 @@ with c2:
     )
 
 # --- STYLE CSS ---
-st.markdown("""
-    <style>
-    [data-testid="column"] { display: flex; flex-direction: column; justify-content: flex-start; min-width: 0px; }
-    .certif-info { font-size: 12px !important; line-height: 1.1 !important; }
-    div.stDownloadButton > button, div.stButton > button { height: 26px !important; width: 100% !important; font-size: 11px !important; padding: 0px !important; min-height: 26px !important; }
-    .add-btn button { background-color: #f0f2f6 !important; border: 1px dashed #999 !important; color: #333 !important; }
-    .stElementContainer { margin-bottom: 1px !important; }
-    .stVerticalBlock { gap: 0rem !important; }
-    .streamlit-expanderContent { padding: 0.5rem !important; }
-    </style>
-""", unsafe_allow_html=True)
+# Remplace ton ancien bloc components.html par ceci :
+st.html("""
+<style>
+    [data-testid="stFileUploadDropzone"] {
+        min-height: 40px !important;
+        height: 40px !important;
+        padding: 0px !important;
+    }
+</style>
+""")
 
 # --- SAISIE UTILISATEUR ---
-c_date, _ = st.columns([1, 2])
-with c_date:
-    date_eng = st.date_input("Date d'engagement :", datetime.now(), format="DD/MM/YYYY")
-
+# --- INITIALISATION DU SESSION STATE ---
+# Indispensable pour pouvoir modifier dynamiquement la date et le tableau
 if 'siret_rows' not in st.session_state:
     st.session_state.siret_rows = pd.DataFrame([{"SIRET": ""}], dtype=str)
+if 'date_eng_val' not in st.session_state:
+    st.session_state.date_eng_val = datetime.now()
 
-df_saisie = st.data_editor(st.session_state.siret_rows, num_rows="dynamic", use_container_width=True,
-                           column_config={"SIRET": st.column_config.TextColumn("SIRET", max_chars=14)})
+c_date, c_upload = st.columns([1, 2])
+
+with c_date:
+    # On lie l'input à session_state.date_eng_val
+    date_eng = st.date_input("Date d'engagement :", value=st.session_state.date_eng_val, format="DD/MM/YYYY")
+    st.session_state.date_eng_val = date_eng # Met à jour si l'utilisateur change à la main
+
+with c_upload:
+    docs = st.file_uploader("📂 Extraction de données (PDF, Excel, ZIP)", type=["pdf", "xlsx", "xls", "zip"], accept_multiple_files=True)
+    if docs:
+        if st.button("🧠 Extraire SIRET & Date", type="secondary", width="stretch"):
+            with st.spinner("Analyse des documents en cours..."):
+                extracted_sirets, extracted_date = analyze_documents(docs)
+                
+                # 1. Mise à jour de la date si trouvée
+                if extracted_date:
+                    st.session_state.date_eng_val = extracted_date
+                    st.success(f"📅 Date trouvée : {extracted_date.strftime('%d/%m/%Y')}")
+                
+                # 2. Mise à jour du tableau des SIRETs
+                if extracted_sirets:
+                    # On récupère les anciens SIRETs valides
+                    current_sirets = [s for s in st.session_state.siret_rows["SIRET"].tolist() if str(s).strip()]
+                    # On fusionne sans doublons
+                    new_list = list(set(current_sirets + extracted_sirets))
+                    # On recrée le DataFrame
+                    st.session_state.siret_rows = pd.DataFrame([{"SIRET": s} for s in new_list], dtype=str)
+                    st.success(f"🔢 {len(extracted_sirets)} SIRET(s) extrait(s) !")
+                
+                if not extracted_date and not extracted_sirets:
+                    st.warning("Aucune donnée exploitable trouvée dans ces documents.")
+                
+                # Rafraîchissement de la page pour afficher les nouvelles valeurs
+                st.rerun()
+
+# Affichage du tableau de SIRETs éditable
+df_saisie = st.data_editor(
+    st.session_state.siret_rows, 
+    num_rows="dynamic", 
+    width="stretch",
+    column_config={"SIRET": st.column_config.TextColumn("SIRET", max_chars=14)}
+)
 
 if st.button("🔍 Analyser les SIRET", type="primary"):
     sirets = [str(s).strip() for s in df_saisie["SIRET"] if s and str(s).strip()]
@@ -194,7 +238,7 @@ if 'audit_results' in st.session_state:
                     fig.update_layout(barcornerradius=10, height=max(180, (len(df_g["Domaine"].unique()) * 30) + 80), margin=dict(l=0, r=0, t=30, b=60),
                                       yaxis={'title': None, 'tickfont': {'size': 10}}, xaxis={'visible': True, 'tickfont': {'size': 9}},
                                       legend=dict(orientation="h", yanchor="bottom", y=-0.4, xanchor="center", x=0.5))
-                    st.plotly_chart(fig, use_container_width=True, key=f"fig_global_{res['SIRET']}_{i}")
+                    st.plotly_chart(fig, width="stretch", key=f"fig_global_{res['SIRET']}_{i}")
 
                 excel_data.append({
                     "SIRET": res['SIRET'], 
@@ -211,7 +255,7 @@ if 'audit_results' in st.session_state:
         st.divider()
         cz, ce = st.columns(2)
         with cz:
-            if st.button("📦 ZIP des certificats", use_container_width=True) and files_to_zip:
+            if st.button("📦 ZIP des certificats", width="stretch") and files_to_zip:
                 buf = io.BytesIO()
                 with zipfile.ZipFile(buf, "a", zipfile.ZIP_DEFLATED) as zf:
                     noms_utilises = set()
@@ -224,7 +268,7 @@ if 'audit_results' in st.session_state:
                             compteur += 1
                         noms_utilises.add(nom_final)
                         zf.writestr(nom_final, f['content'])
-                st.download_button("⬇️ Télécharger ZIP", buf.getvalue(), "Certificats.zip", use_container_width=True)
+                st.download_button("⬇️ Télécharger ZIP", buf.getvalue(), "Certificats.zip", width="stretch")
         with ce:
             output = io.BytesIO()
             if isinstance(date_eng, (int, float)):
@@ -242,4 +286,4 @@ if 'audit_results' in st.session_state:
                 pd.DataFrame(excel_data).to_excel(writer, sheet_name='Données', startrow=1, index=False)
             
             nom_fichier = f"Export_{date_eng}.xlsx"
-            st.download_button("⬇️ Télécharger Excel", data=output.getvalue(), file_name=nom_fichier, use_container_width=True)
+            st.download_button("⬇️ Télécharger Excel", data=output.getvalue(), file_name=nom_fichier, width="stretch")
