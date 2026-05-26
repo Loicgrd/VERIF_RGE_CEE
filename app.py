@@ -249,7 +249,6 @@ if 'audit_results' in st.session_state:
                 with c4: choix_bar = st.selectbox("F", options=get_cee_options(dom_sel), key=f"b_{res['SIRET']}_{dom_sel}_{i}", label_visibility="collapsed")
                 with c5:
                     if info['url']:
-                        st.markdown(f"[👁️ Voir le certificat]({info['url']})", unsafe_allow_html=True)
                         try:
                             # Téléchargement du contenu du PDF (arbitré par l'algorithme de distance)
                             content = requests.get(info['url'], timeout=5).content
@@ -318,6 +317,36 @@ if 'audit_results' in st.session_state:
                 st.download_button("⬇️ Télécharger ZIP", buf.getvalue(), "Certificats.zip", use_container_width=True)
         with ce:
             output = io.BytesIO()
+            
+            # Conversion du timestamp (ms) en objet date lisible
+            if isinstance(date_eng, (int, float)):
+                # Si c'est un nombre (timestamp), on le convertit
+                date_obj = datetime.fromtimestamp(date_eng / 1000)
+            else:
+                # Si c'est déjà un objet datetime ou date, on l'utilise tel quel
+                date_obj = date_eng
+                        
             with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                pd.DataFrame(excel_data).to_excel(writer, index=False)
-            st.download_button("📊 Télécharger Excel", output.getvalue(), "Synthese.xlsx", use_container_width=True)
+                workbook = writer.book
+                worksheet = workbook.add_worksheet('Données')
+                writer.sheets['Données'] = worksheet
+                
+                # Création du format pour qu'Excel affiche une vraie date
+                date_format = workbook.add_format({'num_format': 'dd/mm/yyyy'})
+                
+                # Écriture des labels et de la date (B2)
+                worksheet.write('A1', 'Date d\'engagement :')
+                worksheet.write('B1', date_obj, date_format) 
+                
+                # Écriture des données à partir de la ligne 4 (startrow=3 correspond à la ligne 4)
+                pd.DataFrame(excel_data).to_excel(writer, sheet_name='Données', startrow=1, index=False)
+            
+            # Nom du fichier dynamique (ex: Export_2023-12-03.xlsx)
+            nom_fichier = f"Export_{date_eng}.xlsx"
+            
+            st.download_button(
+                "⬇️ Télécharger Excel", 
+                data=output.getvalue(), 
+                file_name=nom_fichier, 
+                use_container_width=True
+            )
