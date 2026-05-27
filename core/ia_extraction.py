@@ -75,7 +75,7 @@ def ask_ai_for_data(text):
                 
         return data.get("sirets", []), date_obj
     except Exception as e:
-        print(f"DEBUG: ERREUR API IA : {e}")
+        st.error(f"Erreur API Gemini : {e}")  # ← visible dans l'UI
         return [], None
 
 def analyze_documents(uploaded_files):
