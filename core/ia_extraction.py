@@ -9,10 +9,7 @@ from google import genai  # On utilise le nouveau SDK
 
 # Initialisation du client (pas de .configure() !)
 # Assure-toi que st.secrets["GEMINI_API_KEY"] est bien défini dans ton streamlit
-api_key = st.secrets["GEMINI_API_KEY"]
 
-# Initialisation du client
-client = genai.Client(api_key=api_key)
 
 
 def process_file(file_name, file_bytes):
@@ -37,6 +34,12 @@ def ask_ai_for_data(text):
     if not text.strip():
         return [], None
     
+    api_key = st.secrets["GEMINI_API_KEY"]
+
+    # Initialisation du client
+    client = genai.Client(api_key=api_key)
+
+
     prompt = f"""
     Tu es un assistant strict spécialisé dans les documents administratifs français.
     Extrais :

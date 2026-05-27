@@ -79,10 +79,11 @@ with c_upload:
                     st.success(f"🔢 {len(extracted_sirets)} SIRET(s) extrait(s) !")
                 
                 if not extracted_date and not extracted_sirets:
-                    st.warning("Aucune donnée exploitable trouvée dans ces documents.")
-                
-                # Rafraîchissement de la page pour afficher les nouvelles valeurs
-                st.rerun()
+                    # On affiche l'erreur, et SURTOUT on ne fait pas de st.rerun()
+                    st.error("❌ Aucune donnée trouvée ou erreur de l'API IA. Vérifiez les logs Streamlit.")
+                else:
+                    # On recharge uniquement si on a trouvé quelque chose
+                    st.rerun()
 
 # Affichage du tableau de SIRETs éditable
 df_saisie = st.data_editor(
