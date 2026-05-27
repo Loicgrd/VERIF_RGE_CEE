@@ -58,7 +58,7 @@ with c_date:
 
 with c_upload:
     docs = st.file_uploader(
-        "📂 Extraction de données (PDF, Excel, ZIP)", 
+        "📂 Extraction de données (SIRET, Date d'engagement)", 
         type=["pdf", "xlsx", "xls", "zip"], 
         accept_multiple_files=True,
         help="Attention : Utilisation d'IA, ne pas importer de documents avec des éléments à caractère confidentiel."
