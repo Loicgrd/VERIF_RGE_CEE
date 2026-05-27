@@ -6,6 +6,7 @@ import streamlit as st
 from PyPDF2 import PdfReader
 from datetime import datetime
 from google import genai  # On utilise le nouveau SDK
+import re
 
 # Initialisation du client (pas de .configure() !)
 # Assure-toi que st.secrets["GEMINI_API_KEY"] est bien défini dans ton streamlit
@@ -36,14 +37,14 @@ def ask_ai_for_data(text):
     
     api_key = st.secrets["GEMINI_API_KEY"]
 
-    # Initialisation du client
+# Initialisation du client
     client = genai.Client(api_key=api_key)
 
 
     prompt = f"""
     Tu es un assistant strict spécialisé dans les documents administratifs français.
     Extrais :
-    1. Tous les numéros de SIRET (14 chiffres, sans espaces ni tirets).
+    1. Tous les numéros de SIRET UNIQUE(14 chiffres, sans espaces ni tirets).
     2. La date d'engagement au format YYYY-MM-DD seulement si elle est explicitement mentionnée, ou bien les différentes possibilités sont les suivantes :
         Pour les documents suivants : Ordre de Service et Acte d'engagement, c'est la date du document, s'il n'y en a pas c'est la date de signature.
         Pour un devis c'est la date de signature du maire d'ouvrage.
@@ -59,7 +60,7 @@ def ask_ai_for_data(text):
     try:
         # APPEL MODERNE AVEC LE NOUVEAU SDK
         response = client.models.generate_content(
-            model="gemini-flash-latest", 
+            model="gemini-3.1-flash-lite", 
             contents=prompt,
         )
         
@@ -75,12 +76,33 @@ def ask_ai_for_data(text):
                 
         return data.get("sirets", []), date_obj
     except Exception as e:
-        st.error(f"Erreur API Gemini : {e}")  # ← visible dans l'UI
+        error_msg = str(e)
+        error_msg_lower = error_msg.lower()
+        
+        # On intercepte spécifiquement les erreurs de quota (429)
+        if "quota" in error_msg_lower or "429" in error_msg_lower or "exhausted" in error_msg_lower:
+            wait_time = "quelques" # Valeur par défaut
+            
+            # 1ère méthode : on cherche 'retryDelay': '11s'
+            match_delay = re.search(r"retryDelay':\s*'(\d+)s'", error_msg)
+            if match_delay:
+                wait_time = match_delay.group(1)
+            else:
+                # 2ème méthode : on cherche 'retry in 11.66s'
+                match_text = re.search(r"retry in ([\d\.]+)s", error_msg)
+                if match_text:
+                    # On convertit le nombre à virgule en nombre entier (ex: 11.66 devient 11)
+                    wait_time = str(int(float(match_text.group(1))))
+                    
+            print(f"DEBUG: Quota IA dépassé. Attente : {wait_time}s")
+            # On renvoie le code d'erreur, ET on détourne la 2ème variable pour faire passer le temps d'attente
+            return ["QUOTA_EXCEEDED"], wait_time
+            
+        print(f"DEBUG: ERREUR API IA : {e}")
         return [], None
 
 def analyze_documents(uploaded_files):
-    all_sirets = set()
-    found_date = None
+    texte_global = ""
 
     for uploaded_file in uploaded_files:
         uploaded_file.seek(0) 
@@ -92,14 +114,19 @@ def analyze_documents(uploaded_files):
                 for z_info in z.infolist():
                     if not z_info.is_dir():
                         z_bytes = z.read(z_info.filename)
-                        text = process_file(z_info.filename, z_bytes)
-                        sirets, date = ask_ai_for_data(text)
-                        all_sirets.update(sirets)
-                        if not found_date and date: found_date = date
+                        
+                        # Ajout de l'intercalaire avec le nom du fichier du ZIP
+                        texte_global += f"\n\n--- DÉBUT DU DOCUMENT : {z_info.filename} ---\n"
+                        texte_global += process_file(z_info.filename, z_bytes)
+                        texte_global += f"\n--- FIN DU DOCUMENT : {z_info.filename} ---\n"
         else:
-            text = process_file(file_name, file_bytes)
-            sirets, date = ask_ai_for_data(text)
-            all_sirets.update(sirets)
-            if not found_date and date: found_date = date
+            # Ajout de l'intercalaire avec le nom du fichier classique
+            texte_global += f"\n\n--- DÉBUT DU DOCUMENT : {file_name} ---\n"
+            texte_global += process_file(file_name, file_bytes)
+            texte_global += f"\n--- FIN DU DOCUMENT : {file_name} ---\n"
 
-    return list(all_sirets), found_date
+    if texte_global.strip():
+        return ask_ai_for_data(texte_global)
+    else:
+        return [], None
+

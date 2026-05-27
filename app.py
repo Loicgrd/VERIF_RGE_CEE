@@ -61,30 +61,36 @@ with c_upload:
     if docs:
         if st.button("🧠 Extraire SIRET & Date", type="secondary", width="stretch"):
             with st.spinner("Analyse des documents en cours..."):
-                extracted_sirets, extracted_date = analyze_documents(docs)
+                extracted_sirets, extracted_date_or_time = analyze_documents(docs)
                 
-                # 1. Mise à jour de la date si trouvée
-                if extracted_date:
-                    st.session_state.date_eng_val = extracted_date
-                    st.success(f"📅 Date trouvée : {extracted_date.strftime('%d/%m/%Y')}")
+                # --- GESTION DES RÉSULTATS ---
                 
-                # 2. Mise à jour du tableau des SIRETs
-                if extracted_sirets:
-                    # On récupère les anciens SIRETs valides
-                    current_sirets = [s for s in st.session_state.siret_rows["SIRET"].tolist() if str(s).strip()]
-                    # On fusionne sans doublons
-                    new_list = list(set(current_sirets + extracted_sirets))
-                    # On recrée le DataFrame
-                    st.session_state.siret_rows = pd.DataFrame([{"SIRET": s} for s in new_list], dtype=str)
-                    st.success(f"🔢 {len(extracted_sirets)} SIRET(s) extrait(s) !")
-                
-                if not extracted_date and not extracted_sirets:
-                    # On affiche l'erreur, et SURTOUT on ne fait pas de st.rerun()
-                    st.error("❌ Aucune donnée trouvée ou erreur de l'API IA. Vérifiez les logs Streamlit.")
-                else:
-                    # On recharge uniquement si on a trouvé quelque chose
-                    st.rerun()
+                # Cas 1 : L'IA signale qu'on n'a plus de tokens
+                if "QUOTA_EXCEEDED" in extracted_sirets:
+                    temps_attente = extracted_date_or_time
+                    st.warning(f"⏳ Limite de requêtes IA atteinte. Veuillez patienter {temps_attente} secondes avant de réessayer.")
+                    # Pas de st.rerun() !
 
+                # Cas 2 : Rien n'a été trouvé
+                elif not extracted_date_or_time and not extracted_sirets:
+                    st.warning("❌ Aucune donnée exploitable trouvée dans ces documents.")
+                    
+                # Cas 3 : Succès ! On met à jour l'interface
+                else:
+                    # On renomme proprement la variable pour la clarté
+                    extracted_date = extracted_date_or_time 
+                    
+                    if extracted_date:
+                        st.session_state.date_eng_val = extracted_date
+                        st.toast(f"📅 Date trouvée : {extracted_date.strftime('%d/%m/%Y')}")
+                    
+                    if extracted_sirets:
+                        current_sirets = [s for s in st.session_state.siret_rows["SIRET"].tolist() if str(s).strip()]
+                        new_list = list(set(current_sirets + extracted_sirets))
+                        st.session_state.siret_rows = pd.DataFrame([{"SIRET": s} for s in new_list], dtype=str)
+                        st.toast(f"🔢 {len(extracted_sirets)} SIRET(s) extrait(s) !")
+                    
+                    st.rerun()
 # Affichage du tableau de SIRETs éditable
 df_saisie = st.data_editor(
     st.session_state.siret_rows, 
@@ -289,3 +295,11 @@ if 'audit_results' in st.session_state:
             
             nom_fichier = f"Export_{date_eng}.xlsx"
             st.download_button("⬇️ Télécharger Excel", data=output.getvalue(), file_name=nom_fichier, width="stretch")
+
+
+
+
+
+
+
+
