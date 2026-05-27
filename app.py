@@ -57,7 +57,12 @@ with c_date:
     st.session_state.date_eng_val = date_eng # Met à jour si l'utilisateur change à la main
 
 with c_upload:
-    docs = st.file_uploader("📂 Extraction de données (PDF, Excel, ZIP)", type=["pdf", "xlsx", "xls", "zip"], accept_multiple_files=True)
+    docs = st.file_uploader(
+        "📂 Extraction de données (PDF, Excel, ZIP)", 
+        type=["pdf", "xlsx", "xls", "zip"], 
+        accept_multiple_files=True,
+        help="Attention : Utilisation d'IA, ne pas importer de documents avec des éléments à caractère confidentiel."
+    )
     if docs:
         if st.button("🧠 Extraire SIRET & Date", type="secondary", width="stretch"):
             with st.spinner("Analyse des documents en cours..."):
