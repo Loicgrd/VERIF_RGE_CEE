@@ -45,10 +45,12 @@ def ask_ai_for_data(text):
     Tu es un assistant strict spécialisé dans les documents administratifs français.
     Extrais :
     1. Tous les numéros de SIRET UNIQUE(14 chiffres, sans espaces ni tirets).
-    2. La date d'engagement au format YYYY-MM-DD seulement si elle est explicitement mentionnée, ou bien les différentes possibilités sont les suivantes :
-        Pour les documents suivants : Ordre de Service et Acte d'engagement, c'est la date du document, s'il n'y en a pas c'est la date de signature.
-        Pour un devis c'est la date de signature du maire d'ouvrage.
-        Pour un Bon de commande c'est la date de signature du maitre d'ouvrage, ou la date du document s'il n'y en a pas.
+    2. La date d'engagement au format YYYY-MM-DD seulement si elle est explicitement mentionnée sur un excel ou SEULEMENT si tu peux identifier la date parmis les 4 type de documents suivants :
+        2.1. Ordre de Service c'est la date du document, s'il n'y en a pas c'est la date de signature.
+        2.2.Acte d'engagement c'est la date du document, s'il n'y en a pas c'est la date de signature.
+        2.3. Devis c'est la date de signature du maire d'ouvrage.
+        2.4. Bon de commande c'est la date de signature du maitre d'ouvrage, ou la date du document s'il n'y en a pas.
+        Si tu ne trouves pas une de ces dates ou que tu n'identifie pas exactement le document ne prend pas la date.
 
     Renvoie UNIQUEMENT un JSON valide :
     {{"sirets": ["num1", "num2"], "date": "YYYY-MM-DD"}}
