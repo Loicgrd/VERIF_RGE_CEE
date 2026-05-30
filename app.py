@@ -219,6 +219,7 @@ if 'audit_results' in st.session_state:
                 with c4: choix_bar = st.selectbox("F", options=get_cee_options(dom_sel), key=f"b_{res['SIRET']}_{dom_sel}_{i}", label_visibility="collapsed")
                 with c5:
                     if info['url']:
+                        st.link_button("👁️ Voir le certificat", info['url'])
                         try:
                             content = requests.get(info['url'], timeout=5).content
                             ent_clean = res['Entreprise'].replace(" ", "_").replace("/", "-")
@@ -229,7 +230,7 @@ if 'audit_results' in st.session_state:
                             nom_zip = f"{dom_sel}-{ent_clean}-{statut_txt}.pdf"
                             st.download_button("📥 Télécharger", content, nom_indiv, "application/pdf", key=f"dl_{res['SIRET']}_{i}")
                             files_to_zip.append({"content": content, "nom": nom_zip})
-                        except: st.caption("⚠️")
+                        except: st.caption("⚠️ Erreur téléchargement")
                 with c6: show_g = st.checkbox("📊 Graph", key=f"check_{res['SIRET']}_{i}")
                 with c7:
                     if i == st.session_state[nb_key] - 1:
