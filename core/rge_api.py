@@ -79,35 +79,63 @@ def fetch_ademe_data(siret, force_local=False):
     
 
 
-def fetch_gouv_data(siret):
-    url = f"https://recherche-entreprises.api.gouv.fr/search?q={siret}"
+def fetch_gouv_data(siret_cible):
+    siret_cible = str(siret_cible).strip()
+    siren = siret_cible[:9] # Les 9 premiers chiffres forment le SIREN
+    
+    # ÉTAPE 1 : On cherche d'abord par SIREN pour avoir le nom exact de l'entreprise
+    url_siren = f"https://recherche-entreprises.api.gouv.fr/search?q={siren}"
+    
     try:
-        r = requests.get(url, timeout=4)
-        if r.status_code == 200:
-            data = r.json()
-            results = data.get('results', [])
-            if results:
-                # On prend le premier résultat (l'entreprise correspondante)
-                entreprise = results[0]
-                
-                # Infos de base
-                nom = entreprise.get('nom_complet') or entreprise.get('nom_raison_sociale') or "Inconnu"
-                
-                # Infos spécifiques à l'établissement via son SIRET
-                etablissements = entreprise.get('matching_etablissements', [])
-                etab = etablissements[0] if etablissements else {}
-                
-                return {
-                    "trouve": True,
-                    "nom": nom,
-                    "date_creation": etab.get('date_creation'),
-                    "date_fermeture": etab.get('date_fermeture'),
-                    "etat_admin": etab.get('etat_administratif'), # 'A' (Actif) ou 'F' (Fermé)
-                    "adresse_complete": etab.get('adresse', 'Adresse inconnue'),
-                    "cp": etab.get('code_postal', ''),
-                    "commune": etab.get('libelle_commune', '')
-                }
-    except Exception as e:
-        print(f"DEBUG: Erreur API Gouv pour {siret}: {e}")
+        r1 = requests.get(url_siren, timeout=4)
+        if r1.status_code == 200:
+            data1 = r1.json()
+            results1 = data1.get('results', [])
+            if not results1: 
+                return {"trouve": False}
+            
+            entreprise_mere = results1[0]
+            nom_exact = entreprise_mere.get('nom_complet') or entreprise_mere.get('nom_raison_sociale') or "Inconnu"
+            
+            # ÉTAPE 2 : Ton idée ! On cherche par nom, puis on croise avec le SIREN
+            url_nom = f"https://recherche-entreprises.api.gouv.fr/search?q={urllib.parse.quote(nom_exact)}"
+            r2 = requests.get(url_nom, timeout=4)
+            
+            toutes_agences = []
+            if r2.status_code == 200:
+                data2 = r2.json()
+                for ent in data2.get('results', []):
+                    # Le croisement décisif :
+                    if ent.get('siren') == siren:
+                        toutes_agences = ent.get('matching_etablissements', [])
+                        break
+                        
+            # Sécurité : si l'astuce échoue, on garde au moins ce qu'on avait à l'étape 1
+            if not toutes_agences:
+                toutes_agences = entreprise_mere.get('matching_etablissements', [])
 
+            # On isole l'agence scannée par l'utilisateur
+            agence_cible = next((a for a in toutes_agences if a.get('siret') == siret_cible), None)
+            
+            # Si le SIRET précis n'est pas dans la liste, on prend le premier par défaut
+            if not agence_cible and toutes_agences:
+                agence_cible = toutes_agences[0] 
+            
+            # On stocke les autres agences (pour l'historique d'ouverture/fermeture)
+            autres_agences = [a for a in toutes_agences if a.get('siret') != siret_cible]
+            
+            return {
+                "trouve": True,
+                "nom": nom_exact,
+                "date_creation": agence_cible.get('date_creation') if agence_cible else None,
+                "date_fermeture": agence_cible.get('date_fermeture') if agence_cible else None,
+                "etat_admin": agence_cible.get('etat_administratif', 'A') if agence_cible else 'A',
+                "adresse_complete": agence_cible.get('adresse', 'Adresse inconnue') if agence_cible else 'Inconnue',
+                "cp": agence_cible.get('code_postal', '') if agence_cible else '',
+                "commune": agence_cible.get('libelle_commune', '') if agence_cible else '',
+                "autres_agences": autres_agences # La nouveauté est ici !
+            }
+    except Exception as e:
+        print(f"DEBUG: Erreur API Gouv pour {siret_cible}: {e}")
+    
     return {"trouve": False}
