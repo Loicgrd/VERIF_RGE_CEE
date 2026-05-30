@@ -9,7 +9,7 @@ import streamlit.components.v1 as components
 
 
 # --- IMPORT DU NOUVEAU CERVEAU ---
-from core.rge_api import get_cee_options, fetch_ademe_data, extract_qualif_code, clean_url
+from core.rge_api import get_cee_options, fetch_ademe_data, extract_qualif_code, clean_url, fetch_gouv_data
 from core.ia_extraction import analyze_documents
 
 
@@ -79,23 +79,41 @@ with c_upload:
                 # Cas 2 : Rien n'a été trouvé
                 elif not extracted_date_or_time and not extracted_sirets:
                     st.warning("❌ Aucune donnée exploitable trouvée dans ces documents.")
+                
+                # Cas 3 : On a trouvé des SIRETs, mais la date est illisible/absente
+                elif extracted_sirets and not extracted_date_or_time:
+                    st.warning("⚠️ SIRET(s) détecté(s), mais aucune date d'engagement n'a pu être lue de manière fiable.")
+                    st.info(f"SIRETs trouvés : {', '.join(extracted_sirets)}. Veuillez saisir la date manuellement pour lancer l'analyse.")
                     
-                # Cas 3 : Succès ! On met à jour l'interface
-                else:
-                    # On renomme proprement la variable pour la clarté
-                    extracted_date = extracted_date_or_time 
+                    # INJECTION DES SIRET : On met à jour le tableau
+                    st.session_state.siret_rows = pd.DataFrame([{"SIRET": s} for s in extracted_sirets])
+                    st.rerun() # On relance pour afficher le tableau pré-rempli
+
+                # Cas 4 : On a trouvé une date, mais aucun SIRET
+                elif extracted_date_or_time and not extracted_sirets:
+                    date_str = extracted_date_or_time.strftime('%d/%m/%Y')
+                    st.warning(f"⚠️ Date d'engagement trouvée ({date_str}), mais aucun SIRET détecté.")
+                    st.info("Veuillez saisir les numéros de SIRET manuellement pour continuer.")
                     
-                    if extracted_date:
-                        st.session_state.date_eng_val = extracted_date
-                        st.toast(f"📅 Date trouvée : {extracted_date.strftime('%d/%m/%Y')}")
-                    
-                    if extracted_sirets:
-                        current_sirets = [s for s in st.session_state.siret_rows["SIRET"].tolist() if str(s).strip()]
-                        new_list = list(set(current_sirets + extracted_sirets))
-                        st.session_state.siret_rows = pd.DataFrame([{"SIRET": s} for s in new_list], dtype=str)
-                        st.toast(f"🔢 {len(extracted_sirets)} SIRET(s) extrait(s) !")
-                    
+                    # INJECTION DE LA DATE : (Remplace 'date_input_key' par la clé (key) que tu as mise dans ton st.date_input)
+                    st.session_state.date_input_key = extracted_date_or_time
                     st.rerun()
+
+                # Cas 5 : Le scénario parfait (On a les SIRETs ET la date)
+                else:
+                    date_str = extracted_date_or_time.strftime('%d/%m/%Y')
+                    st.success(f"✅ {len(extracted_sirets)} SIRET(s) et date du {date_str} extraits avec succès !")
+                    
+                    # 1. INJECTION DES SIRET dans le tableau de saisie
+                    st.session_state.siret_rows = pd.DataFrame([{"SIRET": s} for s in extracted_sirets])
+                    
+                    # 2. INJECTION DE LA DATE dans le sélecteur de date 
+                    # (Attention : il faut que ton widget st.date_input possède la même 'key' que la variable ci-dessous)
+                    st.session_state.date_input_key = extracted_date_or_time 
+                    
+                    # 3. Actualisation de l'interface
+                    st.rerun()
+
 # Affichage du tableau de SIRETs éditable
 df_saisie = st.data_editor(
     st.session_state.siret_rows, 
@@ -112,11 +130,17 @@ if st.button("🔍 Analyser les SIRET", type="primary"):
         if 'audit_results' in st.session_state:
             del st.session_state.audit_results
         all_results = []
-        with st.spinner("Analyse ADEME..."):
+        with st.spinner("Analyse ADEME et Gouvernement..."):
             for s in sirets:
+                # 1. Requête API Gouvernement
+                gouv_data = fetch_gouv_data(s)
+                
+                # 2. Requête API ADEME (RGE)
                 api_lines = fetch_ademe_data(s, force_local=force_local)
+                
                 if api_lines:
-                    nom_ent = api_lines[0].get('nom_entreprise') or api_lines[0].get('raison_sociale') or "Inconnu"
+                    # ---> L'ENTREPRISE EST RGE
+                    nom_ent = gouv_data.get("nom") if gouv_data.get("trouve") else (api_lines[0].get('nom_entreprise') or api_lines[0].get('raison_sociale') or "Inconnu")
                     domaines_raw = {}
                     for line in api_lines:
                         dom = str(line.get('domaine', 'Inconnu')).strip()
@@ -153,7 +177,24 @@ if st.button("🔍 Analyser les SIRET", type="primary"):
                         else:
                             plus_recente = max(periodes, key=lambda x: x['fin'])
                             domaines_finaux[dom] = {**plus_recente, "status_rge": False, "historique": periodes}
-                    all_results.append({"SIRET": s, "Entreprise": nom_ent, "Domaines": domaines_finaux})
+                            
+                    all_results.append({
+                        "SIRET": s, 
+                        "Entreprise": nom_ent, 
+                        "Domaines": domaines_finaux,
+                        "is_rge": True,
+                        "gouv_data": gouv_data
+                    })
+                else:
+                    # ---> L'ENTREPRISE N'EST PAS RGE (ou introuvable)
+                    nom_ent = gouv_data.get("nom") if gouv_data.get("trouve") else "Introuvable"
+                    all_results.append({
+                        "SIRET": s, 
+                        "Entreprise": nom_ent, 
+                        "Domaines": {},
+                        "is_rge": False,
+                        "gouv_data": gouv_data
+                    })
 
         if not all_results:
             st.error("❌ Aucun résultat trouvé pour le(s) SIRET saisis.")
@@ -165,7 +206,77 @@ if 'audit_results' in st.session_state:
     files_to_zip, excel_data = [], []
 
     for res in st.session_state.audit_results:
-        with st.expander(f"🏢 {res['Entreprise']} ({res['SIRET']})", expanded=True):
+        # --- Gestion du Titre de l'Expander avec l'API Gouv ---
+        gouv = res.get('gouv_data', {})
+        titre_expander = f"🏢 {res['Entreprise']} ({res['SIRET']})"
+        
+        
+        
+        # 2. Ajout de l'état d'ouverture (Gouv)
+        if gouv.get("trouve"):
+            d_crea = gouv.get('date_creation')
+            d_ferm = gouv.get('date_fermeture')
+            etat = gouv.get('etat_admin', 'A')
+            
+            d_crea_str = datetime.strptime(d_crea, '%Y-%m-%d').strftime('%d/%m/%Y') if d_crea else "?"
+            
+            if etat == 'F' or d_ferm:
+                d_ferm_str = datetime.strptime(d_ferm, '%Y-%m-%d').strftime('%d/%m/%Y') if d_ferm else "?"
+                titre_expander += f" — 🔴 Fermée (Ouverte le {d_crea_str}, Fermée le {d_ferm_str})"
+            else:
+                titre_expander += f" — 🟢 Ouverte depuis le {d_crea_str}"
+
+        # 1. NOUVEAU : On ajoute l'alerte NON RGE directement dans le titre
+        if not res.get("is_rge"):
+            titre_expander += " — ⚠️ ATTENTION : N'EST PAS RGE (Aucune donnée ADEME)"
+        
+        with st.expander(titre_expander, expanded=True):
+            
+            # ---> CAS 1 : ENTREPRISE NON RGE
+            if not res.get("is_rge"):
+                if gouv.get("trouve"):
+                    # Le st.warning a été supprimé ici car l'info est dans le bandeau
+                    
+                    # Découpage en 3 colonnes : Identité, Statut/Adresse, et Agences
+                    col_identite, col_statut_adresse, col_agences = st.columns([1, 1.2, 1.5])
+                    
+                    with col_identite:
+                        st.markdown(f"**🏢 Nom :** {res['Entreprise']}")
+                        st.markdown(f"**🔢 SIRET :** {res['SIRET']}")
+                        
+                    with col_statut_adresse:
+                        statut_badge = '🔴 Fermée' if gouv.get('etat_admin') == 'F' else '🟢 Active'
+                        st.markdown(f"**📊 Statut :** {statut_badge}")
+                        st.markdown(f"**📍 Adresse :** {gouv.get('adresse_complete', 'Inconnue')}")
+                    
+                    with col_agences:
+                        autres = gouv.get('autres_agences', [])
+                        if autres:
+                            with st.expander(f"📍 Voir les autres agences ({len(autres)})", expanded=False):
+                                for a in autres: 
+                                    etat_a = a.get('etat_administratif')
+                                    s_badge = "🔴 Fermée" if etat_a == 'F' else "🟢 Active"
+                                    
+                                    d_ouv_raw = a.get('date_creation')
+                                    d_ferm_raw = a.get('date_fermeture')
+                                    d_ouv = datetime.strptime(d_ouv_raw, '%Y-%m-%d').strftime('%d/%m/%Y') if d_ouv_raw else "?"
+                                    
+                                    if etat_a == 'F' or d_ferm_raw:
+                                        d_ferm_a = datetime.strptime(d_ferm_raw, '%Y-%m-%d').strftime('%d/%m/%Y') if d_ferm_raw else "?"
+                                        texte_date = f"du {d_ouv} au {d_ferm_a}"
+                                    else:
+                                        texte_date = f"depuis le {d_ouv}"
+                                        
+                                    st.markdown(f"- **{a.get('siret')}** ({a.get('libelle_commune', 'Inconnu')}) : {s_badge} *({texte_date})*")
+                        else:
+                            st.caption("ℹ️ Aucune autre agence pour ce SIREN")
+                            
+                else:
+                    st.error(f"❌ SIRET {res['SIRET']} totalement introuvable (ni RGE, ni dans la base du Gouvernement).")
+                
+                continue # On passe au SIRET suivant
+
+
             graph_data = []
             for d, info in res['Domaines'].items():
                 c_code = "#28a745" if info['status_rge'] else "#dc3545"
@@ -219,6 +330,7 @@ if 'audit_results' in st.session_state:
                 with c4: choix_bar = st.selectbox("F", options=get_cee_options(dom_sel), key=f"b_{res['SIRET']}_{dom_sel}_{i}", label_visibility="collapsed")
                 with c5:
                     if info['url']:
+                        st.link_button("👁️ Voir le certificat", info['url'])
                         try:
                             content = requests.get(info['url'], timeout=5).content
                             ent_clean = res['Entreprise'].replace(" ", "_").replace("/", "-")
@@ -229,8 +341,15 @@ if 'audit_results' in st.session_state:
                             nom_zip = f"{dom_sel}-{ent_clean}-{statut_txt}.pdf"
                             st.download_button("📥 Télécharger", content, nom_indiv, "application/pdf", key=f"dl_{res['SIRET']}_{i}")
                             files_to_zip.append({"content": content, "nom": nom_zip})
-                        except: st.caption("⚠️")
-                with c6: show_g = st.checkbox("📊 Graph", key=f"check_{res['SIRET']}_{i}")
+                        except: st.caption("⚠️ Erreur téléchargement")
+                with c6: 
+                    show_g = st.checkbox("📊 Graph", key=f"check_g_{res['SIRET']}_{i}")
+                    
+                    # NOUVEAU : Case à cocher pour les agences
+                    show_a = False
+                    autres = gouv.get('autres_agences', [])
+                    if i == 0 and autres:
+                        show_a = st.checkbox(f"📍Agences ({len(autres)})", key=f"check_a_{res['SIRET']}")
                 with c7:
                     if i == st.session_state[nb_key] - 1:
                         st.markdown('<div class="add-btn">', unsafe_allow_html=True)
@@ -252,6 +371,26 @@ if 'audit_results' in st.session_state:
                                       yaxis={'title': None, 'tickfont': {'size': 10}}, xaxis={'visible': True, 'tickfont': {'size': 9}},
                                       legend=dict(orientation="h", yanchor="bottom", y=-0.4, xanchor="center", x=0.5))
                     st.plotly_chart(fig, width="stretch", key=f"fig_global_{res['SIRET']}_{i}")
+
+                if i == 0 and show_a:
+                    st.markdown("---")
+                    st.markdown(f"**📍 Liste des autres agences liées à cette entreprise ({len(autres)} au total) :**")
+                    
+                    for a in autres: 
+                        etat_a = a.get('etat_administratif')
+                        s_badge = "🔴 Fermée" if etat_a == 'F' else "🟢 Active"
+                        
+                        d_ouv_raw = a.get('date_creation')
+                        d_ferm_raw = a.get('date_fermeture')
+                        d_ouv = datetime.strptime(d_ouv_raw, '%Y-%m-%d').strftime('%d/%m/%Y') if d_ouv_raw else "?"
+                        
+                        if etat_a == 'F' or d_ferm_raw:
+                            d_ferm_a = datetime.strptime(d_ferm_raw, '%Y-%m-%d').strftime('%d/%m/%Y') if d_ferm_raw else "?"
+                            texte_date = f"du {d_ouv} au {d_ferm_a}"
+                        else:
+                            texte_date = f"depuis le {d_ouv}"
+                            
+                        st.markdown(f"- **{a.get('siret')}** ({a.get('libelle_commune', 'Inconnu')}) : {s_badge} *({texte_date})*")
 
                 excel_data.append({
                     "SIRET": res['SIRET'], 

@@ -3,45 +3,31 @@ import json
 import zipfile
 import pandas as pd
 import streamlit as st
-from PyPDF2 import PdfReader
 from datetime import datetime
-from google import genai  # On utilise le nouveau SDK
-import re
+from google import genai 
 
-# Initialisation du client (pas de .configure() !)
-# Assure-toi que st.secrets["GEMINI_API_KEY"] est bien défini dans ton streamlit
-
-
-
-def process_file(file_name, file_bytes):
-    text_content = ""
-    if file_name.lower().endswith('.pdf'):
-        try:
-            reader = PdfReader(io.BytesIO(file_bytes))
-            for page in reader.pages:
-                text_content += page.extract_text() + "\n"
-        except Exception:
-            pass
-    elif file_name.lower().endswith(('.xlsx', '.xls')):
-        try:
-            dfs = pd.read_excel(io.BytesIO(file_bytes), sheet_name=None)
-            for df in dfs.values():
-                text_content += df.to_string() + "\n"
-        except Exception:
-            pass
-    return text_content
-
-def ask_ai_for_data(text):
-    if not text.strip():
-        return [], None
-    
+def ask_ai_for_data(files_data, extra_text):
+    """
+    Envoie les fichiers bruts à Gemini pour analyse multimodale.
+    files_data est une liste de dictionnaires : {"data": bytes, "mime_type": str, "name": str}
+    """
     api_key = st.secrets["GEMINI_API_KEY"]
-
-# Initialisation du client
     client = genai.Client(api_key=api_key)
 
+    # Préparation du contenu pour l'IA
+    contents = []
+    # Ajout du texte extrait des Excel
+    if extra_text:
+        contents.append(f"Voici des données extraites de fichiers Excel : {extra_text}")
+    
+    # Ajout des fichiers (PDF/Images)
+    for f in files_data:
+        contents.append({"inline_data": {"data": f["data"], "mime_type": f["mime_type"]}})
+        contents.append(f"Document : {f['name']}")
 
-    prompt = f"""
+    contents.append("Utilise ces informations (Excel + Images/PDF) pour extraire les SIRET et la date...")
+
+    prompt = """
     Tu es un assistant strict spécialisé dans les documents administratifs français.
     Extrais :
     1. Tous les numéros de SIRET UNIQUE(14 chiffres, sans espaces ni tirets).
@@ -55,18 +41,16 @@ def ask_ai_for_data(text):
     Renvoie UNIQUEMENT un JSON valide :
     {{"sirets": ["num1", "num2"], "date": "YYYY-MM-DD"}}
     S'il n'y a pas de SIRET ou de date, mets une liste vide [] ou null.
-    
-    Texte : {text[:15000]}
     """
+    contents.append(prompt)
     
     try:
-        # APPEL MODERNE AVEC LE NOUVEAU SDK
+        # Utilisation de gemini-2.0-flash pour ses capacités multimodales excellentes
         response = client.models.generate_content(
             model="gemini-3.1-flash-lite", 
-            contents=prompt,
+            contents=contents,
         )
         
-        # Nettoyage
         clean_json = response.text.replace('```json', '').replace('```', '').strip()
         data = json.loads(clean_json)
         
@@ -77,58 +61,44 @@ def ask_ai_for_data(text):
             except: pass
                 
         return data.get("sirets", []), date_obj
+
     except Exception as e:
-        error_msg = str(e)
-        error_msg_lower = error_msg.lower()
-        
-        # On intercepte spécifiquement les erreurs de quota (429)
-        if "quota" in error_msg_lower or "429" in error_msg_lower or "exhausted" in error_msg_lower:
-            wait_time = "quelques" # Valeur par défaut
-            
-            # 1ère méthode : on cherche 'retryDelay': '11s'
-            match_delay = re.search(r"retryDelay':\s*'(\d+)s'", error_msg)
-            if match_delay:
-                wait_time = match_delay.group(1)
-            else:
-                # 2ème méthode : on cherche 'retry in 11.66s'
-                match_text = re.search(r"retry in ([\d\.]+)s", error_msg)
-                if match_text:
-                    # On convertit le nombre à virgule en nombre entier (ex: 11.66 devient 11)
-                    wait_time = str(int(float(match_text.group(1))))
-                    
-            print(f"DEBUG: Quota IA dépassé. Attente : {wait_time}s")
-            # On renvoie le code d'erreur, ET on détourne la 2ème variable pour faire passer le temps d'attente
-            return ["QUOTA_EXCEEDED"], wait_time
-            
+        error_msg = str(e).lower()
+        if "quota" in error_msg or "429" in error_msg or "exhausted" in error_msg:
+            return ["QUOTA_EXCEEDED"], "60"
         print(f"DEBUG: ERREUR API IA : {e}")
         return [], None
 
 def analyze_documents(uploaded_files):
-    texte_global = ""
+    files_to_process = []
+    
+    # On stocke le texte des Excel pour les envoyer en tant que texte brut
+    texte_extra_excel = ""
 
     for uploaded_file in uploaded_files:
-        uploaded_file.seek(0) 
+        uploaded_file.seek(0)
         file_bytes = uploaded_file.read()
-        file_name = uploaded_file.name
-
-        if file_name.lower().endswith('.zip'):
-            with zipfile.ZipFile(io.BytesIO(file_bytes)) as z:
-                for z_info in z.infolist():
-                    if not z_info.is_dir():
-                        z_bytes = z.read(z_info.filename)
-                        
-                        # Ajout de l'intercalaire avec le nom du fichier du ZIP
-                        texte_global += f"\n\n--- DÉBUT DU DOCUMENT : {z_info.filename} ---\n"
-                        texte_global += process_file(z_info.filename, z_bytes)
-                        texte_global += f"\n--- FIN DU DOCUMENT : {z_info.filename} ---\n"
-        else:
-            # Ajout de l'intercalaire avec le nom du fichier classique
-            texte_global += f"\n\n--- DÉBUT DU DOCUMENT : {file_name} ---\n"
-            texte_global += process_file(file_name, file_bytes)
-            texte_global += f"\n--- FIN DU DOCUMENT : {file_name} ---\n"
-
-    if texte_global.strip():
-        return ask_ai_for_data(texte_global)
-    else:
-        return [], None
+        file_name = uploaded_file.name.lower()
+        
+        # 1. Traitement spécifique des Excel
+        if file_name.endswith(('.xlsx', '.xls')):
+            try:
+                dfs = pd.read_excel(io.BytesIO(file_bytes), sheet_name=None)
+                for sheet_name, df in dfs.items():
+                    texte_extra_excel += f"\n--- Contenu Excel ({file_name} - {sheet_name}) ---\n"
+                    texte_extra_excel += df.to_string()
+            except Exception as e:
+                st.error(f"Erreur lecture Excel {file_name}: {e}")
+        
+        # 2. Traitement des PDF et Images (IA Multimodale)
+        elif file_name.endswith(('.pdf', '.jpg', '.jpeg', '.png')):
+            mime = "application/pdf" if file_name.endswith('.pdf') else "image/jpeg"
+            files_to_process.append({
+                "data": file_bytes,
+                "mime_type": mime,
+                "name": file_name
+            })
+            
+    # 3. Appel de l'IA avec les deux types de données
+    return ask_ai_for_data(files_to_process, texte_extra_excel)
 
