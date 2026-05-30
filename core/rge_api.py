@@ -36,7 +36,7 @@ MAP_CEE = {
 
     # --- VENTILATION (RGE Ventilation) ---
     "Ventilation 2020": ["TH125", "TH127", "TH155"],
-    "Ventilation mécanique": ["TH125", "TH127", "TH155"],
+    "Ventilation mécanique": ["TH127", "TH125", "TH155"],
 
     # --- AUDITS ET RÉNOVATION GLOBALE (RGE Études / RGE Travaux pour les artisans) ---
     "Audit énergétique Maison individuelle": ["TH164", "TH174"],
