@@ -9,7 +9,7 @@ import streamlit.components.v1 as components
 
 
 # --- IMPORT DU NOUVEAU CERVEAU ---
-from core.rge_api import get_cee_options, fetch_ademe_data, extract_qualif_code, clean_url
+from core.rge_api import get_cee_options, fetch_ademe_data, extract_qualif_code, clean_url, fetch_gouv_data
 from core.ia_extraction import analyze_documents
 
 
@@ -112,11 +112,17 @@ if st.button("🔍 Analyser les SIRET", type="primary"):
         if 'audit_results' in st.session_state:
             del st.session_state.audit_results
         all_results = []
-        with st.spinner("Analyse ADEME..."):
+        with st.spinner("Analyse ADEME et Gouvernement..."):
             for s in sirets:
+                # 1. Requête API Gouvernement
+                gouv_data = fetch_gouv_data(s)
+                
+                # 2. Requête API ADEME (RGE)
                 api_lines = fetch_ademe_data(s, force_local=force_local)
+                
                 if api_lines:
-                    nom_ent = api_lines[0].get('nom_entreprise') or api_lines[0].get('raison_sociale') or "Inconnu"
+                    # ---> L'ENTREPRISE EST RGE
+                    nom_ent = gouv_data.get("nom") if gouv_data.get("trouve") else (api_lines[0].get('nom_entreprise') or api_lines[0].get('raison_sociale') or "Inconnu")
                     domaines_raw = {}
                     for line in api_lines:
                         dom = str(line.get('domaine', 'Inconnu')).strip()
@@ -153,7 +159,24 @@ if st.button("🔍 Analyser les SIRET", type="primary"):
                         else:
                             plus_recente = max(periodes, key=lambda x: x['fin'])
                             domaines_finaux[dom] = {**plus_recente, "status_rge": False, "historique": periodes}
-                    all_results.append({"SIRET": s, "Entreprise": nom_ent, "Domaines": domaines_finaux})
+                            
+                    all_results.append({
+                        "SIRET": s, 
+                        "Entreprise": nom_ent, 
+                        "Domaines": domaines_finaux,
+                        "is_rge": True,
+                        "gouv_data": gouv_data
+                    })
+                else:
+                    # ---> L'ENTREPRISE N'EST PAS RGE (ou introuvable)
+                    nom_ent = gouv_data.get("nom") if gouv_data.get("trouve") else "Introuvable"
+                    all_results.append({
+                        "SIRET": s, 
+                        "Entreprise": nom_ent, 
+                        "Domaines": {},
+                        "is_rge": False,
+                        "gouv_data": gouv_data
+                    })
 
         if not all_results:
             st.error("❌ Aucun résultat trouvé pour le(s) SIRET saisis.")
@@ -165,7 +188,47 @@ if 'audit_results' in st.session_state:
     files_to_zip, excel_data = [], []
 
     for res in st.session_state.audit_results:
-        with st.expander(f"🏢 {res['Entreprise']} ({res['SIRET']})", expanded=True):
+        # --- Gestion du Titre de l'Expander avec l'API Gouv ---
+        gouv = res.get('gouv_data', {})
+        titre_expander = f"🏢 {res['Entreprise']} ({res['SIRET']})"
+        
+        if gouv.get("trouve"):
+            d_crea = gouv.get('date_creation')
+            d_ferm = gouv.get('date_fermeture')
+            etat = gouv.get('etat_admin', 'A')
+            
+            d_crea_str = datetime.strptime(d_crea, '%Y-%m-%d').strftime('%d/%m/%Y') if d_crea else "?"
+            d_ferm_str = datetime.strptime(d_ferm, '%Y-%m-%d').strftime('%d/%m/%Y') if d_ferm else "?"
+            
+            if etat == 'F' or d_ferm:
+                titre_expander += f" — 🔴 Fermée (Ouverte le {d_crea_str}, Fermée le {d_ferm_str})"
+            else:
+                titre_expander += f" — 🟢 Ouverte depuis le {d_crea_str}"
+        
+        with st.expander(titre_expander, expanded=True):
+            
+            # ---> CAS 1 : ENTREPRISE NON RGE
+            if not res.get("is_rge"):
+                if gouv.get("trouve"):
+                    st.warning("⚠️ **ATTENTION : Cette entreprise N'EST PAS RGE.** (Aucune donnée ADEME trouvée)")
+                    
+                    # Création de deux colonnes pour aligner les informations côte à côte
+                    col_identite, col_statut_adresse = st.columns([1, 1.2])
+                    
+                    with col_identite:
+                        st.markdown(f"**🏢 Nom :** {res['Entreprise']}")
+                        st.markdown(f"**🔢 SIRET :** {res['SIRET']}")
+                        
+                    with col_statut_adresse:
+                        statut_badge = '🔴 Fermée' if gouv.get('etat_admin') == 'F' else '🟢 Active'
+                        st.markdown(f"**📊 Statut :** {statut_badge}")
+                        st.markdown(f"**📍 Adresse :** {gouv.get('adresse_complete', 'Inconnue')}")
+                else:
+                    st.error(f"❌ SIRET {res['SIRET']} totalement introuvable (ni RGE, ni dans la base du Gouvernement). Veuillez vérifier la saisie.")
+                
+                continue # On arrête ici l'affichage pour ce SIRET, on passe au suivant
+
+
             graph_data = []
             for d, info in res['Domaines'].items():
                 c_code = "#28a745" if info['status_rge'] else "#dc3545"
