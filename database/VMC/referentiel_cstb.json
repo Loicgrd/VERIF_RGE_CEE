@@ -1,0 +1,138 @@
+{
+    "14.5/17-2273": [
+        {
+            "numero_atec": "14.5/17-2273",
+            "indice_revision": "V8",
+            "fabricant": "Société ANJOS",
+            "debut_validite": "2025-11-06",
+            "fin_validite": "2032-06-30",
+            "modeles": [
+                {
+                    "nom_modele": "Copernic V",
+                    "type_logement": "Collectif",
+                    "basse_pression": false,
+                    "debits_disponibles": [
+                        "400",
+                        "700",
+                        "1000",
+                        "1500",
+                        "2500"
+                    ]
+                },
+                {
+                    "nom_modele": "Copernic H PCI",
+                    "type_logement": "Collectif",
+                    "basse_pression": false,
+                    "debits_disponibles": [
+                        "400",
+                        "700",
+                        "1000",
+                        "1500",
+                        "2500",
+                        "3500"
+                    ]
+                },
+                {
+                    "nom_modele": "COMETE",
+                    "type_logement": "Collectif",
+                    "basse_pression": false,
+                    "debits_disponibles": [
+                        "400",
+                        "700",
+                        "1100",
+                        "1500",
+                        "2000",
+                        "2600",
+                        "3200",
+                        "3800",
+                        "4500",
+                        "5300",
+                        "6200",
+                        "8200",
+                        "11000"
+                    ]
+                },
+                {
+                    "nom_modele": "COSMOS",
+                    "type_logement": "Collectif",
+                    "basse_pression": false,
+                    "debits_disponibles": [
+                        "400",
+                        "700",
+                        "1100",
+                        "1500",
+                        "2000",
+                        "2600",
+                        "3200",
+                        "3800",
+                        "4500",
+                        "5300",
+                        "6200",
+                        "8400",
+                        "8200",
+                        "11000"
+                    ]
+                }
+            ]
+        }
+    ],
+    "14.5/17-2279": [
+        {
+            "numero_atec": "14.5/17-2279",
+            "indice_revision": "V4",
+            "fabricant": "Société ANJOS",
+            "debut_validite": "2024-11-28",
+            "fin_validite": "2025-06-30",
+            "modeles": [
+                {
+                    "nom_modele": "HYGROCOSY",
+                    "type_logement": "Individuel",
+                    "basse_pression": false,
+                    "debits_disponibles": []
+                },
+                {
+                    "nom_modele": "HYGROCOSY BC 2",
+                    "type_logement": "Individuel",
+                    "basse_pression": false,
+                    "debits_disponibles": []
+                },
+                {
+                    "nom_modele": "HYGROCOSY BC FLEX",
+                    "type_logement": "Individuel",
+                    "basse_pression": false,
+                    "debits_disponibles": []
+                },
+                {
+                    "nom_modele": "HYGROCOSY BC FLEX +",
+                    "type_logement": "Individuel",
+                    "basse_pression": false,
+                    "debits_disponibles": []
+                },
+                {
+                    "nom_modele": "HYGROCOSY FLEX",
+                    "type_logement": "Individuel",
+                    "basse_pression": false,
+                    "debits_disponibles": []
+                },
+                {
+                    "nom_modele": "COMETE",
+                    "type_logement": "Collectif",
+                    "basse_pression": false,
+                    "debits_disponibles": [
+                        "400",
+                        "700"
+                    ]
+                },
+                {
+                    "nom_modele": "Copernic H",
+                    "type_logement": "Collectif",
+                    "basse_pression": false,
+                    "debits_disponibles": [
+                        "400",
+                        "700"
+                    ]
+                }
+            ]
+        }
+    ]
+}
