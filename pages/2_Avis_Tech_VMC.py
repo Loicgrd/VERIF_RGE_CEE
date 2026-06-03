@@ -124,10 +124,7 @@ with tab_consult:
 
     st.divider()
 
-    # --- NOUVEAU : ON N'AFFICHE RIEN TANT QU'ON N'A PAS CLIQUÉ ---
-    if not submit_search:
-        st.info("👈 Veuillez définir vos critères et cliquer sur **Rechercher** pour afficher les résultats.")
-        st.stop() # Arrête le script ici : tout ce qui est en dessous ne sera pas lu
+
 
     def get_base_atec(numero):
         return str(numero or '').split('_')[0].split(' ')[0]
@@ -290,6 +287,7 @@ with tab_consult:
 # =====================================================================
 # ONGLET 2 : AJOUTER UN NOUVEL AVIS MANUELLEMENT (AVEC IA)
 # =====================================================================
+
 with tab_ajout:
     st.header("➕ Ajouter un nouvel Avis Technique")
     
