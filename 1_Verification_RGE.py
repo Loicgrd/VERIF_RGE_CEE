@@ -8,7 +8,6 @@ import plotly.express as px
 import streamlit.components.v1 as components
 import os
 
-
 # --- IMPORT DU NOUVEAU CERVEAU ---
 from core.rge_api import get_cee_options, fetch_ademe_data, extract_qualif_code, clean_url, fetch_gouv_data
 from core.ia_extraction import analyze_documents
@@ -30,7 +29,6 @@ with c2:
     )
 
 # --- STYLE CSS ---
-# Remplace ton ancien bloc components.html par ceci :
 st.html("""
 <style>
     [data-testid="stFileUploadDropzone"] {
@@ -41,8 +39,27 @@ st.html("""
 </style>
 """)
 
+# --- OPTIMISATION : MISE EN CACHE DES REQUÊTES LOURDES ---
+@st.cache_data(show_spinner=False)
+def get_pdf_content(url):
+    """Télécharge le PDF une seule fois et le garde en mémoire."""
+    try:
+        return requests.get(url, timeout=5).content
+    except Exception:
+        return None
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def get_gouv_data_cached(siret):
+    """Met en cache les requêtes gouvernementales pendant 1h."""
+    return fetch_gouv_data(siret)
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def get_ademe_data_cached(siret, force_local_flag):
+    """Met en cache les requêtes ADEME pendant 1h."""
+    return fetch_ademe_data(siret, force_local=force_local_flag)
+
+
 # --- SAISIE UTILISATEUR ---
-# --- INITIALISATION DU SESSION STATE ---
 # Indispensable pour pouvoir modifier dynamiquement la date et le tableau
 if 'siret_rows' not in st.session_state:
     st.session_state.siret_rows = pd.DataFrame([{"SIRET": ""}], dtype=str)
@@ -52,9 +69,8 @@ if 'date_eng_val' not in st.session_state:
 c_date, c_upload = st.columns([1, 2])
 
 with c_date:
-    # On lie l'input à session_state.date_eng_val
     date_eng = st.date_input("Date d'engagement :", value=st.session_state.date_eng_val, format="DD/MM/YYYY")
-    st.session_state.date_eng_val = date_eng # Met à jour si l'utilisateur change à la main
+    st.session_state.date_eng_val = date_eng
 
 with c_upload:
     docs = st.file_uploader(
@@ -68,50 +84,28 @@ with c_upload:
             with st.spinner("Analyse des documents en cours..."):
                 extracted_sirets, extracted_date_or_time = analyze_documents(docs)
                 
-                # --- GESTION DES RÉSULTATS ---
-                
-                # Cas 1 : L'IA signale qu'on n'a plus de tokens
+                # --- GESTION DES RÉSULTATS IA ---
                 if "QUOTA_EXCEEDED" in extracted_sirets:
                     temps_attente = extracted_date_or_time
                     st.warning(f"⏳ Limite de requêtes IA atteinte. Veuillez patienter {temps_attente} secondes avant de réessayer.")
-                    # Pas de st.rerun() !
-
-                # Cas 2 : Rien n'a été trouvé
                 elif not extracted_date_or_time and not extracted_sirets:
                     st.warning("❌ Aucune donnée exploitable trouvée dans ces documents.")
-                
-                # Cas 3 : On a trouvé des SIRETs, mais la date est illisible/absente
                 elif extracted_sirets and not extracted_date_or_time:
                     st.warning("⚠️ SIRET(s) détecté(s), mais aucune date d'engagement n'a pu être lue de manière fiable.")
                     st.info(f"SIRETs trouvés : {', '.join(extracted_sirets)}. Veuillez saisir la date manuellement pour lancer l'analyse.")
-                    
-                    # INJECTION DES SIRET : On met à jour le tableau
                     st.session_state.siret_rows = pd.DataFrame([{"SIRET": s} for s in extracted_sirets])
-                    st.rerun() # On relance pour afficher le tableau pré-rempli
-
-                # Cas 4 : On a trouvé une date, mais aucun SIRET
+                    st.rerun()
                 elif extracted_date_or_time and not extracted_sirets:
                     date_str = extracted_date_or_time.strftime('%d/%m/%Y')
                     st.warning(f"⚠️ Date d'engagement trouvée ({date_str}), mais aucun SIRET détecté.")
                     st.info("Veuillez saisir les numéros de SIRET manuellement pour continuer.")
-                    
-                    # INJECTION DE LA DATE : (Remplace 'date_input_key' par la clé (key) que tu as mise dans ton st.date_input)
                     st.session_state.date_input_key = extracted_date_or_time
                     st.rerun()
-
-                # Cas 5 : Le scénario parfait (On a les SIRETs ET la date)
                 else:
                     date_str = extracted_date_or_time.strftime('%d/%m/%Y')
                     st.success(f"✅ {len(extracted_sirets)} SIRET(s) et date du {date_str} extraits avec succès !")
-                    
-                    # 1. INJECTION DES SIRET dans le tableau de saisie
                     st.session_state.siret_rows = pd.DataFrame([{"SIRET": s} for s in extracted_sirets])
-                    
-                    # 2. INJECTION DE LA DATE dans le sélecteur de date 
-                    # (Attention : il faut que ton widget st.date_input possède la même 'key' que la variable ci-dessous)
                     st.session_state.date_input_key = extracted_date_or_time 
-                    
-                    # 3. Actualisation de l'interface
                     st.rerun()
 
 # Affichage du tableau de SIRETs éditable
@@ -132,11 +126,11 @@ if st.button("🔍 Analyser les SIRET", type="primary"):
         all_results = []
         with st.spinner("Analyse ADEME et Gouvernement..."):
             for s in sirets:
-                # 1. Requête API Gouvernement
-                gouv_data = fetch_gouv_data(s)
+                # 1. Requête API Gouvernement (Mise en cache)
+                gouv_data = get_gouv_data_cached(s)
                 
-                # 2. Requête API ADEME (RGE)
-                api_lines = fetch_ademe_data(s, force_local=force_local)
+                # 2. Requête API ADEME (Mise en cache)
+                api_lines = get_ademe_data_cached(s, force_local)
                 
                 if api_lines:
                     # ---> L'ENTREPRISE EST RGE
@@ -201,18 +195,16 @@ if st.button("🔍 Analyser les SIRET", type="primary"):
         else:
             st.session_state.audit_results = all_results
 
+
 # --- AFFICHAGE DES RÉSULTATS ---
 if 'audit_results' in st.session_state:
     files_to_zip, excel_data = [], []
 
     for res in st.session_state.audit_results:
-        # --- Gestion du Titre de l'Expander avec l'API Gouv ---
         gouv = res.get('gouv_data', {})
         titre_expander = f"🏢 {res['Entreprise']} ({res['SIRET']})"
         
-        
-        
-        # 2. Ajout de l'état d'ouverture (Gouv)
+        # Ajout de l'état d'ouverture (Gouv)
         if gouv.get("trouve"):
             d_crea = gouv.get('date_creation')
             d_ferm = gouv.get('date_fermeture')
@@ -226,7 +218,7 @@ if 'audit_results' in st.session_state:
             else:
                 titre_expander += f" — 🟢 Ouverte depuis le {d_crea_str}"
 
-        # 1. NOUVEAU : On ajoute l'alerte NON RGE directement dans le titre
+        # Alerte NON RGE directement dans le titre
         if not res.get("is_rge"):
             titre_expander += " — ⚠️ ATTENTION : N'EST PAS RGE (Aucune donnée ADEME)"
         
@@ -235,9 +227,6 @@ if 'audit_results' in st.session_state:
             # ---> CAS 1 : ENTREPRISE NON RGE
             if not res.get("is_rge"):
                 if gouv.get("trouve"):
-                    # Le st.warning a été supprimé ici car l'info est dans le bandeau
-                    
-                    # Découpage en 3 colonnes : Identité, Statut/Adresse, et Agences
                     col_identite, col_statut_adresse, col_agences = st.columns([1, 1.2, 1.5])
                     
                     with col_identite:
@@ -277,6 +266,7 @@ if 'audit_results' in st.session_state:
                 continue # On passe au SIRET suivant
 
 
+            # ---> CAS 2 : ENTREPRISE RGE
             graph_data = []
             for d, info in res['Domaines'].items():
                 c_code = "#28a745" if info['status_rge'] else "#dc3545"
@@ -293,7 +283,7 @@ if 'audit_results' in st.session_state:
             if nb_key not in st.session_state: st.session_state[nb_key] = 1
 
             for i in range(st.session_state[nb_key]):
-                c1, c2, c3, c4, c5, c6, c7 = st.columns([1.8, 0.8, 1.2, 0.8, 1.2, 0.6, 0.3])
+                c1, c2, c3, c4, c5, c6, c7 = st.columns([1.5, 0.8, 1.2, 0.8, 1.2, 1.0, 0.5])
                 with c1: dom_sel = st.selectbox(f"D{i}", options=liste_doms, key=f"s_{res['SIRET']}_{i}", label_visibility="collapsed")
                 
                 info = res['Domaines'][dom_sel]
@@ -327,29 +317,34 @@ if 'audit_results' in st.session_state:
 
                 with c3:
                     st.markdown(f"<div class='certif-info'><b>N° Certificat :</b> {info['n_certif']}<br><i>Début : {debut_affiche.strftime('%d/%m/%Y')}</i><br><i>Fin : {fin_affiche.strftime('%d/%m/%Y')}</i></div>", unsafe_allow_html=True)
+                
                 with c4: choix_bar = st.selectbox("F", options=get_cee_options(dom_sel), key=f"b_{res['SIRET']}_{dom_sel}_{i}", label_visibility="collapsed")
+                
                 with c5:
                     if info['url']:
-                        st.link_button("👁️ Voir le certificat", info['url'])
+                        st.link_button("👁️ Voir certificat", info['url'])
                         try:
-                            content = requests.get(info['url'], timeout=5).content
-                            ent_clean = res['Entreprise'].replace(" ", "_").replace("/", "-")
-                            ok_ko = "OK" if info['status_rge'] else "KO"
-                            nom_indiv = f"{choix_bar}-RGE-{ok_ko} ({ent_clean}).pdf"
-
-                            statut_txt = "VALIDE" if info['status_rge'] else "EXPIRE"
-                            nom_zip = f"{dom_sel}-{ent_clean}-{statut_txt}.pdf"
-                            st.download_button("📥 Télécharger", content, nom_indiv, "application/pdf", key=f"dl_{res['SIRET']}_{i}")
-                            files_to_zip.append({"content": content, "nom": nom_zip})
+                            # ---> MODIFICATION ICI : Appel à la fonction en cache plutôt qu'à requests.get()
+                            content = get_pdf_content(info['url'])
+                            
+                            if content:
+                                ent_clean = res['Entreprise'].replace(" ", "_").replace("/", "-")
+                                ok_ko = "OK" if info['status_rge'] else "KO"
+                                nom_indiv = f"{choix_bar}-RGE-{ok_ko} ({ent_clean}).pdf"
+    
+                                statut_txt = "VALIDE" if info['status_rge'] else "EXPIRE"
+                                nom_zip = f"{dom_sel}-{ent_clean}-{statut_txt}.pdf"
+                                st.download_button("📥 Télécharger", content, nom_indiv, "application/pdf", key=f"dl_{res['SIRET']}_{i}")
+                                files_to_zip.append({"content": content, "nom": nom_zip})
                         except: st.caption("⚠️ Erreur téléchargement")
+                
                 with c6: 
                     show_g = st.checkbox("📊 Graph", key=f"check_g_{res['SIRET']}_{i}")
-                    
-                    # NOUVEAU : Case à cocher pour les agences
                     show_a = False
                     autres = gouv.get('autres_agences', [])
                     if i == 0 and autres:
                         show_a = st.checkbox(f"📍Agences ({len(autres)})", key=f"check_a_{res['SIRET']}")
+                
                 with c7:
                     if i == st.session_state[nb_key] - 1:
                         st.markdown('<div class="add-btn">', unsafe_allow_html=True)
