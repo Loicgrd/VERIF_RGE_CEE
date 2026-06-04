@@ -21,7 +21,7 @@ MAP_CEE = {
     "Isolation des combles perdus": ["EN101"],
     "Isolation des toitures terrasses ou des toitures par l'extérieur": ["EN105"],
     "Isolation des murs et planchers bas 2020": ["EN102", "EN103", "EN107"],
-    "Isolation par l'intérieur des murs ou rampants de toitures ou plafonds": ["EN101", "EN102"],
+    "Isolation par l'intérieur des murs ou rampants de toitures  ou plafonds": ["EN101", "EN102"],
     "Isolation des murs par l'extérieur": ["EN102"],
     "Isolation des planchers bas": ["EN103"],
 
