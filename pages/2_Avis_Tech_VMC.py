@@ -45,14 +45,13 @@ if not donnees_atec:
     st.warning("Aucune donnée trouvée dans la base.")
     st.stop()
 
-# --- FONCTION MAGIQUE POUR LE FORMATAGE DU NUMERO ---
+# --- FORMATAGE DU NUMERO ---
 def parse_numero_complet(texte_complet):
     """Sépare '14.5/17-2273_v6' en ('14.5/17-2273', 'V6') pour la base de données."""
     if not texte_complet:
         return "", "V1"
     if "_" in texte_complet:
         parties = texte_complet.rsplit("_", 1)
-        # On force la révision en majuscule (v6 -> V6) pour empêcher les faux doublons
         return parties[0].strip(), parties[1].strip().upper()
     return texte_complet.strip(), "V1"
 
@@ -92,11 +91,73 @@ with tab_consult:
         st.info("👈 Veuillez définir vos critères et cliquer sur **Rechercher** pour afficher les résultats.")
     else:
         st.session_state['recherche_active'] = True
-        resultats_finaux = filter_and_group_atec(donnees_atec, filtre_marque, filtre_texte, filtre_date)
+        
+        # --- LOGIQUE D'EXTRACTION ET DE GROUPEMENT ROBUSTE ---
+        # 1. Trouver les familles (numéros de base) d'avis correspondant aux filtres texte/marque
+        bases_retenues = set()
+        for doc in donnees_atec:
+            num_atec = str(doc.get('numero_atec', ''))
+            base_num = num_atec.split('_')[0].strip()
+            distributeur = str(doc.get('distributeur', '')).lower()
+            titulaire = str(doc.get('titulaire', '')).lower()
+            
+            match_marque = True
+            if filtre_marque != "Toutes":
+                match_marque = (filtre_marque.lower() in distributeur) or (filtre_marque.lower() in titulaire)
+            
+            match_texte = True
+            if filtre_texte:
+                txt = filtre_texte.lower()
+                match_model = any(txt in str(m.get('nom_modele', '')).lower() for m in doc.get('modeles', []) if isinstance(m, dict))
+                match_texte = (txt in num_atec.lower()) or (txt in distributeur) or match_model
+            
+            if match_marque and match_texte:
+                bases_retenues.add(base_num)
+        
+        # 2. Re-sélectionner TOUTES les versions pour ces familles (évite la perte d'historique)
+        resultats_filtres = []
+        for doc in donnees_atec:
+            base_num = str(doc.get('numero_atec', '')).split('_')[0].strip()
+            if base_num in bases_retenues:
+                if filtre_date:
+                    try:
+                        deb = datetime.datetime.strptime(doc.get('debut_validite', ''), "%Y-%m-%d").date() if doc.get('debut_validite') else None
+                        fin = datetime.datetime.strptime(doc.get('fin_validite', ''), "%Y-%m-%d").date() if doc.get('fin_validite') else None
+                        if deb and fin and not (deb <= filtre_date <= fin): continue
+                        elif deb and filtre_date < deb: continue
+                        elif fin and filtre_date > fin: continue
+                    except:
+                        pass
+                resultats_filtres.append(doc)
 
-        if len(resultats_finaux) == 0:
+        if len(resultats_filtres) == 0:
             st.info("Aucun Avis Technique ne correspond à ces critères.")
         else:
+            # 3. Tri ordonné : par numéro de base, puis par indice de révision décroissant
+            def get_sort_key(d):
+                base = str(d.get('numero_atec', '')).split('_')[0].strip()
+                rev_str = str(d.get('indice_revision', 'V1')).upper().replace('V', '').replace('MODIFICATIF', '').strip()
+                try: 
+                    rev_num = int(rev_str)
+                except ValueError: 
+                    rev_num = 0
+                
+                # CORRECTION : On ne trie plus par distributeur en premier !
+                # Ainsi, les variations d'orthographe (V.T.I vs VTI) ne séparent plus la famille.
+                return (base, -rev_num)
+
+            resultats_finaux = sorted(resultats_filtres, key=get_sort_key)
+
+            # 4. Identification dynamique de la version la plus haute à l'écran
+            bases_vues = set()
+            for d in resultats_finaux:
+                base = str(d.get('numero_atec', '')).split('_')[0].strip()
+                if base not in bases_vues:
+                    d['_est_version_recente'] = True
+                    bases_vues.add(base)
+                else:
+                    d['_est_version_recente'] = False
+
             st.caption(f"**{len(resultats_finaux)} résultat(s) trouvé(s)**")
             
             for doc in resultats_finaux:
@@ -110,23 +171,22 @@ with tab_consult:
                     else: modeles_a_afficher = modeles_bruts
                 else: modeles_a_afficher = []
 
-                # Préparation des dates pour les mettre dans le bandeau
-                deb_str = doc['_deb_parsed'].strftime("%d/%m/%Y") if doc.get('_deb_parsed') else "Inconnue"
+                deb_str = doc.get('debut_validite', 'Inconnue')
+                try: deb_str = datetime.datetime.strptime(deb_str, "%Y-%m-%d").date().strftime("%d/%m/%Y")
+                except: pass
                 try: fin_str = datetime.datetime.strptime(doc.get('fin_validite', ''), "%Y-%m-%d").date().strftime("%d/%m/%Y")
                 except: fin_str = "Inconnue"
 
-                is_expanded = doc.get('_est_version_recente', False) and (len(resultats_finaux) < 15)
-                
+                # REIFICATION ICI : La version récente reste ouverte, l'historique se ferme de manière isolée
+                is_expanded = doc.get('_est_version_recente', False)
                 badge = "🟢 Version Récente" if doc.get('_est_version_recente') else "🕰️ Historique"
                 
-                # NOUVEAU BANDEAU : Intègre la date de validité
                 titre_bandeau = f"🏭 {doc.get('distributeur', doc.get('titulaire', 'Inconnu'))}  |  📄 {full_atec}  |  📅 {deb_str} ➡️ {fin_str}  |  {badge}"
 
                 with st.expander(titre_bandeau, expanded=is_expanded):
                     mode_edition = st.toggle("✏️ Éditer cet Avis", key=f"toggle_{doc['id']}")
                     
                     if not mode_edition:
-                        # Affichage allégé puisqu'on a monté les dates
                         col_ref, col_lien = st.columns([3, 1])
                         with col_ref: st.code(full_atec, language=None)
                         with col_lien:
@@ -176,7 +236,6 @@ with tab_consult:
                         with st.form(f"form_edit_{doc['id']}"):
                             c1, c2 = st.columns(2)
                             with c1:
-                                # Champ UNIQUE pour l'édition
                                 mod_full_num = st.text_input("Numéro d'Avis complet (ex: 14.5/17-2273_V2)", value=full_atec)
                                 mod_tit = st.text_input("Titulaire", value=doc.get('titulaire', ''))
                             with c2:
@@ -208,7 +267,6 @@ with tab_consult:
                             edited_df_mod = st.data_editor(df_edit, num_rows="dynamic", column_config=config_colonnes, hide_index=True, use_container_width=True, key=f"grid_{doc['id']}")
 
                             if st.form_submit_button("💾 Sauvegarder les modifications", type="primary"):
-                                # Le script sépare automatiquement le texte du champ
                                 mod_num, mod_rev = parse_numero_complet(mod_full_num)
                                 
                                 modeles_json_mod = []
@@ -236,7 +294,6 @@ with tab_consult:
 # =====================================================================
 # ONGLET 2 : AJOUTER UN NOUVEL AVIS MANUELLEMENT (AVEC IA)
 # =====================================================================
-
 with tab_ajout:
     st.header("➕ Ajouter un nouvel Avis Technique")
     st.info("Importez le PDF de l'Avis Technique. Gemini va le lire et pré-remplir tous les champs ci-dessous pour vous !")
@@ -281,8 +338,6 @@ with tab_ajout:
     st.divider()
 
     prefill = st.session_state.get('prefill_data', {})
-    
-    # Pré-traitement pour afficher le champ unique rempli par l'IA
     prefill_num = prefill.get("numero_atec", "")
     if prefill_num and prefill.get("indice_revision") and "_" not in prefill_num:
         prefill_num = f"{prefill_num}_{prefill['indice_revision']}"
@@ -290,7 +345,6 @@ with tab_ajout:
     with st.form("form_add_atec"):
         col1, col2 = st.columns(2)
         with col1:
-            # Champ UNIQUE pour l'ajout
             in_full_num = st.text_input("Numéro d'Avis complet (ex: 14.5/17-2273_V2)", value=prefill_num)
             in_tit = st.text_input("Titulaire (ex: ALDES)", value=prefill.get("titulaire", ""))
         with col2:
@@ -330,7 +384,6 @@ with tab_ajout:
                 st.error("⚠️ Le Numéro d'Avis et le Titulaire sont obligatoires.")
             else:
                 try:
-                    # Séparation automatique au moment de la sauvegarde
                     in_num, in_rev = parse_numero_complet(in_full_num)
                     
                     modeles_json_new = []
