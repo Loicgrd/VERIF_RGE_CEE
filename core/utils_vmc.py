@@ -42,6 +42,7 @@ RÈGLES D'EXTRACTION ABSOLUES :
 5. BASSE PRESSION : true à TOUS les modèles si le système global est "Basse Pression" ou "BP". (Ne pas confondre avec Basse consommation).
 6. DOUBLE FLUX : true si le document mentionne un système "Double Flux", "DF", ou un échangeur thermique.
 7. PUISSANCES PONDÉRÉES (W-Th-C) ET RÈGLE MATHÉMATIQUE (CRITIQUE) :
+   - la puissance n'est à compléter QUE pour le VMC individuelles et Seulement si la version contient les tableau des puissances poru chaque configuration de logmeent (F1, F2, F3, F4 etc)
    - Pour CHAQUE modèle identifié, cherche ses puissances électriques pondérées (W-Th-C) pour la configuration "F4" stricte (SdB/WC=0, SdB=1, WC=1, SdE=0, soit "0 1 1 0").
    - Ne te fie pas aveuglément à l'alignement des colonnes, cherche les intersections logiques.
    - RÈGLE MÉTIER ABSOLUE : La puissance W-Th-C d'un système Hygro B est TOUJOURS strictement inférieure à celle d'un système Hygro A pour un même modèle.
