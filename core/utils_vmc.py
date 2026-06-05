@@ -1,7 +1,7 @@
 import datetime
 import re
 from collections import defaultdict
-import pdfplumber
+
 
 # --- LE PROMPT (Cerveau de l'IA pour le pré-remplissage) ---
 PROMPT_VMC = """
