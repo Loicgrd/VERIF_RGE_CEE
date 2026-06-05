@@ -1,6 +1,7 @@
 import datetime
 import re
 from collections import defaultdict
+import pdfplumber
 
 # --- LE PROMPT (Cerveau de l'IA pour le pré-remplissage) ---
 PROMPT_VMC = """
@@ -40,20 +41,23 @@ RÈGLES D'EXTRACTION ABSOLUES :
 4. TYPE DE LOGEMENT : "maisons individuelles" = "Individuel", "logements collectifs" = "Collectif", les deux = "Mixte".
 5. BASSE PRESSION : true à TOUS les modèles si le système global est "Basse Pression" ou "BP". (Ne pas confondre avec Basse consommation).
 6. DOUBLE FLUX : true si le document mentionne un système "Double Flux", "DF", ou un échangeur thermique.
-7. PUISSANCES PONDÉRÉES (W-Th-C) - LOGIQUE SÉQUENTIELLE OBLIGATOIRE :
-   - CONSIDÈRE LE DOCUMENT COMME AYANT DEUX CHAPITRES DE TABLEAUX.
-   - ÉTAPE 1 (TRAITEMENT DU PREMIER TABLEAU) : 
-     - Parcoure le document du haut vers le bas. Trouve la première occurrence d'un tableau contenant des données "F4" (configuration "0 1 1 0").
-     - Ce premier tableau est obligatoirement le tableau "Hygro A".
-     - Extraits les valeurs pour chaque modèle et stocke-les dans `puissance_hygro_a`.
-   - ÉTAPE 2 (TRAITEMENT DU DEUXIÈME TABLEAU) : 
-     - Continue de lire le document après le premier tableau.
-     - Trouve la DEUXIÈME occurrence d'un tableau contenant des données "F4" (configuration "0 1 1 0").
-     - Ce deuxième tableau est obligatoirement le tableau "Hygro B".
-     - Extraits les valeurs pour chaque modèle et stocke-les dans `puissance_hygro_b`.
-   - RÈGLE D'OR : Si tu extrais la même valeur pour A et pour B, c'est que tu as échoué à trouver le deuxième tableau. Cherche plus loin dans le document.
-   - Ne mets que les chiffres (ex: "14.0"). Si introuvable, mets null.
+7. PUISSANCES PONDÉRÉES (W-Th-C) ET RÈGLE MATHÉMATIQUE (CRITIQUE) :
+   - Pour CHAQUE modèle identifié, cherche ses puissances électriques pondérées (W-Th-C) pour la configuration "F4" stricte (SdB/WC=0, SdB=1, WC=1, SdE=0, soit "0 1 1 0").
+   - Ne te fie pas aveuglément à l'alignement des colonnes, cherche les intersections logiques.
+   - RÈGLE MÉTIER ABSOLUE : La puissance W-Th-C d'un système Hygro B est TOUJOURS strictement inférieure à celle d'un système Hygro A pour un même modèle.
+   - CAS N°1 (Deux valeurs trouvées) : Si tu trouves 2 valeurs pour la configuration F4 d'un modèle, place OBLIGATOIREMENT la plus GRANDE dans `puissance_hygro_a` et la plus PETITE dans `puissance_hygro_b`.
+   - CAS N°2 (Une seule valeur trouvée) : Si tu ne trouves qu'une seule valeur, vérifie le titre du tableau ou le contexte de la page pour déterminer si c'est du Hygro A ou Hygro B. Attribue la valeur au bon champ et mets `null` pour l'autre.
+   - CAS N°3 (Aucune valeur) : Si la case est vide ou introuvable, mets `null`. Ne duplique jamais la valeur d'un autre modèle pour boucher un trou.
+   - FORMAT : Convertis la valeur en format numérique (remplace la virgule par un point, ex: "14.5").
 8. FORMAT : Renvoie UNIQUEMENT un JSON valide.
+
+RÈGLES CRITIQUES D'EXTRACTION :
+
+1. SAUVEGARDE DES MODÈLES ET EXCLUSIONS (IMPORTANT) : 
+   - Tu dois créer une entrée dans le tableau JSON "modeles" pour CHAQUE variante ou modèle de caisson VMC mentionné dans les tableaux de la section "Modèles" ou "Caractéristiques".
+   - EXCLUSION STRICTE : Ne confonds pas les noms de modèles avec les légendes des graphiques, les courbes aérauliques ou les descriptions de tests. 
+   - IGNORE tout texte à rallonge décrivant une configuration de test (exemples de mots à bannir : "débits décroissants", "config X bouches", "courbes caractéristiques", "Pmin", "multipiquage").
+   - Un modèle de VMC valide a un nom commercial court et précis (ex: "Bahia Curve", "T.Flow Hygro +", "EASYVEC"). Ne garde que les vrais noms de caissons.
 """
 
 def format_debits_to_str(debits_list):
@@ -131,3 +135,5 @@ def filter_and_group_atec(donnees_atec, filtre_marque, filtre_texte, filtre_date
         resultats_finaux.extend(groupe)
 
     return resultats_finaux
+
+

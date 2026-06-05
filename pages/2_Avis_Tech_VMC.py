@@ -310,11 +310,29 @@ with tab_ajout:
 
                     fichier_upload = client_gemini.files.upload(file=tmp_path)
                     
-                    reponse_ia = client_gemini.models.generate_content(
-                        model='gemini-3.1-flash-lite',
-                        contents=[fichier_upload, PROMPT_VMC],
-                        config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.0)
-                    )
+                    try:
+                        # TENTATIVE 1 : On essaie avec Gemini 1.5 Flash (Le plus performant, mais limité)
+                        reponse_ia = client_gemini.models.generate_content(
+                            model='gemini-3.5-flash', 
+                            contents=[fichier_upload, PROMPT_VMC], # Ou prompt_hybride si tu as gardé Python
+                            config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.0)
+                        )
+                        
+                    except Exception as e:
+                        # Si l'erreur contient "429" (Too Many Requests) ou "quota"
+                        if "429" in str(e) or "quota" in str(e).lower():
+                            # On avertit l'utilisateur sans bloquer l'application
+                            st.warning("⚠️ Quota journalier du modèle principal atteint. Basculement automatique sur la version Lite...")
+                            
+                            # TENTATIVE 2 : On bascule sur Flash Lite (Flash-8b)
+                            reponse_ia = client_gemini.models.generate_content(
+                                model='gemini-3.1-flash-lite', 
+                                contents=[fichier_upload, PROMPT_VMC],
+                                config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.0)
+                            )
+                        else:
+                            # Si c'est une autre erreur (ex: fichier corrompu, problème réseau), on l'affiche normalement
+                            raise e
                     
                     client_gemini.files.delete(name=fichier_upload.name)
                     os.remove(tmp_path)
@@ -324,6 +342,31 @@ with tab_ajout:
                         raw_text = raw_text[raw_text.find("{"):raw_text.rfind("}") + 1]
                     
                     donnees_extraites = json.loads(raw_text)
+                    
+                    donnees_extraites = json.loads(raw_text)
+                    
+                    # --- NOUVEAU : FILTRE POST-IA (NETTOYAGE DES FAUX MODÈLES) ---
+                    if "modeles" in donnees_extraites:
+                        vrais_modeles = []
+                        # Liste des mots qui prouvent que ce n'est pas un nom commercial
+                        mots_interdits = [
+                            "débits", "décroissants", "config", "bouches", "pmin", 
+                            "multipiquage", "courbe", "caractéristique",
+                            "b100", "b200", "fan_", "-fan", "t.flow", "thermodynamique"
+                        ]
+                        
+                        for m in donnees_extraites["modeles"]:
+                            nom = str(m.get("nom_modele", "")).lower()
+                            
+                            # On garde le modèle SI : 
+                            # 1. Le nom fait moins de 45 caractères (un nom commercial est court)
+                            # 2. Il ne contient aucun mot interdit
+                            if len(nom) < 45 and not any(mot in nom for mot in mots_interdits):
+                                vrais_modeles.append(m)
+                                
+                        # On remplace la liste brute par la liste nettoyée
+                        donnees_extraites["modeles"] = vrais_modeles
+                    # -------------------------------------------------------------
                     
                     if donnees_extraites.get("est_vmc") is False:
                         st.error("⚠️ L'IA a détecté que ce document ne concerne pas une VMC.")
