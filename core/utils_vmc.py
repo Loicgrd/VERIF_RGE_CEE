@@ -46,11 +46,11 @@ RÈGLES D'EXTRACTION ABSOLUES :
    - Pour CHAQUE modèle identifié, cherche ses puissances électriques pondérées (W-Th-C) pour la configuration "F4" stricte (SdB/WC=0, SdB=1, WC=1, SdE=0, soit "0 1 1 0").
    - Ne te fie pas aveuglément à l'alignement des colonnes, cherche les intersections logiques.
    - RÈGLE MÉTIER ABSOLUE : La puissance W-Th-C d'un système Hygro B est TOUJOURS strictement inférieure à celle d'un système Hygro A pour un même modèle.
-   - CAS N°1 (Deux valeurs trouvées) : Si tu trouves 2 valeurs pour la configuration F4 d'un modèle, place OBLIGATOIREMENT la plus GRANDE dans `puissance_hygro_a` et la plus PETITE dans `puissance_hygro_b`.
+   - CAS N°1 (Deux valeurs trouvées) : Si tu trouves 2 valeurs pour la configuration F4 d'un modèle, place OBLIGATOIREMENT la plus GRANDE dans `puissance_hygro_a` et la plus PETITE dans `puissance_hygro_b`, elles ne peuvent pas être égales.
    - CAS N°2 (Une seule valeur trouvée) : Si tu ne trouves qu'une seule valeur, vérifie le titre du tableau ou le contexte de la page pour déterminer si c'est du Hygro A ou Hygro B. Attribue la valeur au bon champ et mets `null` pour l'autre.
    - CAS N°3 (Aucune valeur) : Si la case est vide ou introuvable, mets `null`. Ne duplique jamais la valeur d'un autre modèle pour boucher un trou.
    - FORMAT : Convertis la valeur en format numérique (remplace la virgule par un point, ex: "14.5").
-   - Si la case est vide tu mets `puissance_hygro_a` et `puissance_hygro_b` sur la valeur `null`
+   - Si la case est vide tu mets `puissance_hygro_a` et/ou `puissance_hygro_b` sur la valeur `null`
 8. FORMAT : Renvoie UNIQUEMENT un JSON valide.
 
 RÈGLES CRITIQUES D'EXTRACTION :
