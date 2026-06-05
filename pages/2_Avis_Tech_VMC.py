@@ -311,27 +311,30 @@ with tab_ajout:
                     fichier_upload = client_gemini.files.upload(file=tmp_path)
                     
                     try:
-                        # TENTATIVE 1 : On essaie avec Gemini 1.5 Flash (Le plus performant, mais limité)
+                        # TENTATIVE 1 : On essaie avec Gemini 1.5 Flash
                         reponse_ia = client_gemini.models.generate_content(
                             model='gemini-3.5-flash', 
-                            contents=[fichier_upload, PROMPT_VMC], # Ou prompt_hybride si tu as gardé Python
+                            contents=[fichier_upload, PROMPT_VMC],
                             config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.0)
                         )
                         
                     except Exception as e:
-                        # Si l'erreur contient "429" (Too Many Requests) ou "quota"
-                        if "429" in str(e) or "quota" in str(e).lower():
-                            # On avertit l'utilisateur sans bloquer l'application
-                            st.warning("⚠️ Quota journalier du modèle principal atteint. Basculement automatique sur la version Lite...")
+                        # On convertit le message d'erreur en minuscules pour faciliter la recherche
+                        erreur_str = str(e).lower()
+                        
+                        # Si l'erreur est liée au quota (429), à la surcharge (503), ou à l'indisponibilité
+                        if "429" in erreur_str or "503" in erreur_str or "quota" in erreur_str or "unavailable" in erreur_str:
                             
-                            # TENTATIVE 2 : On bascule sur Flash Lite (Flash-8b)
+                            st.warning("⚠️ Modèle principal saturé ou quota atteint (Erreur de serveur). Basculement automatique sur la version Lite...")
+                            
+                            # TENTATIVE 2 : On bascule sur Flash Lite
                             reponse_ia = client_gemini.models.generate_content(
                                 model='gemini-3.1-flash-lite', 
                                 contents=[fichier_upload, PROMPT_VMC],
                                 config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.0)
                             )
                         else:
-                            # Si c'est une autre erreur (ex: fichier corrompu, problème réseau), on l'affiche normalement
+                            # Si c'est une VRAIE erreur inattendue (ex: PDF corrompu), on l'affiche
                             raise e
                     
                     client_gemini.files.delete(name=fichier_upload.name)
