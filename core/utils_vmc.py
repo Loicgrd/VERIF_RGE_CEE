@@ -50,6 +50,7 @@ RÈGLES D'EXTRACTION ABSOLUES :
    - CAS N°2 (Une seule valeur trouvée) : Si tu ne trouves qu'une seule valeur, vérifie le titre du tableau ou le contexte de la page pour déterminer si c'est du Hygro A ou Hygro B. Attribue la valeur au bon champ et mets `null` pour l'autre.
    - CAS N°3 (Aucune valeur) : Si la case est vide ou introuvable, mets `null`. Ne duplique jamais la valeur d'un autre modèle pour boucher un trou.
    - FORMAT : Convertis la valeur en format numérique (remplace la virgule par un point, ex: "14.5").
+   - Si la case est vide tu mets `puissance_hygro_a` et `puissance_hygro_b` sur la valeur `null`
 8. FORMAT : Renvoie UNIQUEMENT un JSON valide.
 
 RÈGLES CRITIQUES D'EXTRACTION :
@@ -60,6 +61,56 @@ RÈGLES CRITIQUES D'EXTRACTION :
    - IGNORE tout texte à rallonge décrivant une configuration de test (exemples de mots à bannir : "débits décroissants", "config X bouches", "courbes caractéristiques", "Pmin", "multipiquage").
    - Un modèle de VMC valide a un nom commercial court et précis (ex: "Bahia Curve", "T.Flow Hygro +", "EASYVEC"). Ne garde que les vrais noms de caissons.
 """
+
+PROMPT_VMC_LITE = """
+Tu es un Ingénieur Expert en conformité documentaire pour les Certificats d'Économies d'Énergie (CEE).
+Analyse cet Avis Technique (ATec) du CSTB.
+
+Extrais les informations au format JSON strict avec la structure exacte suivante :
+{
+  "est_vmc": true,
+  "numero_atec": "Ex: 14.5/17-2273",
+  "indice_revision": "Ex: 'V2', 'Modificatif 1' ou 'V1' si non précisé",
+  "titulaire": "Le(s) constructeur(s) officiel(s)",
+  "distributeur": "La marque commerciale. Si aucune marque distincte, remets le titulaire.",
+  "debut_validite": "YYYY-MM-DD",
+  "fin_validite": "YYYY-MM-DD",
+  "modeles": [
+    {
+      "nom_modele": "Le nom de base de la gamme (ex: EASYVEC)",
+      "type_logement": "'Individuel', 'Collectif' ou 'Mixte'",
+      "basse_pression": true ou false,
+      "double_flux": true ou false,
+      "debits_disponibles": ["400", "700"],
+      "puissance_hygro_a": "Ex: '14.0'",
+      "puissance_hygro_b": "Ex: '15.2'"
+    }
+  ]
+}
+
+RÈGLES D'EXTRACTION ABSOLUES :
+1. FILTRE HORS PÉRIMÈTRE : Si le document ne traite pas de VMC, mets "est_vmc": false.
+2. TITULAIRE ET DISTRIBUTEUR : "titulaire" (Constructeur), "distributeur" (Marque commerciale).
+3. IDENTIFICATION DES CAISSONS ET DÉBITS (RÈGLE STRICTE) :
+   - Isole le nom de base de la gamme.
+   - DÉBITS : Les débits sont UNIQUEMENT les chiffres qui suivent immédiatement le nom du modèle dans le texte (ex: "400" et "700" pour EASYVEC 400 et EASYVEC 700). IL EST STRICTEMENT INTERDIT de lire ou d'extraire des débits à l'intérieur des tableaux.
+   - REGROUPEMENT : Si plusieurs déclinaisons de débits, crée UN SEUL objet et liste-les dans `debits_disponibles`.
+   - ACCESSOIRES : Rejette systématiquement les chapeaux de toiture (ex: Grauli, Defa), bouches, etc.
+4. TYPE DE LOGEMENT : "maisons individuelles" = "Individuel", "logements collectifs" = "Collectif", les deux = "Mixte".
+5. BASSE PRESSION : true à TOUS les modèles si le système global est "Basse Pression" ou "BP". (Ne pas confondre avec Basse consommation).
+6. DOUBLE FLUX : true si le document mentionne un système "Double Flux", "DF", ou un échangeur thermique.
+7. PUISSANCES PONDÉRÉES : Tu ne dois PAS chercher les puissances électriques (W-Th-C). Laisse TOUJOURS `puissance_hygro_a` et `puissance_hygro_b` sur la valeur `null`.
+8. FORMAT : Renvoie UNIQUEMENT un JSON valide.
+
+RÈGLES CRITIQUES D'EXTRACTION :
+
+1. SAUVEGARDE DES MODÈLES ET EXCLUSIONS (IMPORTANT) : 
+   - Tu dois créer une entrée dans le tableau JSON "modeles" pour CHAQUE variante ou modèle de caisson VMC mentionné dans les tableaux de la section "Modèles" ou "Caractéristiques".
+   - EXCLUSION STRICTE : Ne confonds pas les noms de modèles avec les légendes des graphiques, les courbes aérauliques ou les descriptions de tests. 
+   - IGNORE tout texte à rallonge décrivant une configuration de test (exemples de mots à bannir : "débits décroissants", "config X bouches", "courbes caractéristiques", "Pmin", "multipiquage").
+   - Un modèle de VMC valide a un nom commercial court et précis (ex: "Bahia Curve", "T.Flow Hygro +", "EASYVEC"). Ne garde que les vrais noms de caissons.
+"""
+
 
 def format_debits_to_str(debits_list):
     if not isinstance(debits_list, list): return ""

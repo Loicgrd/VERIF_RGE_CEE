@@ -7,7 +7,7 @@ dossier_racine = os.path.abspath(os.path.join(dossier_actuel, ".."))
 if dossier_racine not in sys.path:
     sys.path.append(dossier_racine)
 
-from core.utils_vmc import PROMPT_VMC, format_debits_to_str, parse_debits_from_str, filter_and_group_atec
+from core.utils_vmc import PROMPT_VMC, PROMPT_VMC_LITE, format_debits_to_str, parse_debits_from_str
 from supabase import create_client
 import datetime
 import re
@@ -311,30 +311,28 @@ with tab_ajout:
                     fichier_upload = client_gemini.files.upload(file=tmp_path)
                     
                     try:
-                        # TENTATIVE 1 : On essaie avec Gemini 1.5 Flash
+                        # TENTATIVE 1 : On essaie avec Gemini 1.5 Flash (Le plus intelligent)
                         reponse_ia = client_gemini.models.generate_content(
                             model='gemini-3.5-flash', 
-                            contents=[fichier_upload, PROMPT_VMC],
+                            contents=[fichier_upload, PROMPT_VMC], # Prompt complet
                             config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.0)
                         )
                         
                     except Exception as e:
-                        # On convertit le message d'erreur en minuscules pour faciliter la recherche
                         erreur_str = str(e).lower()
                         
-                        # Si l'erreur est liée au quota (429), à la surcharge (503), ou à l'indisponibilité
                         if "429" in erreur_str or "503" in erreur_str or "quota" in erreur_str or "unavailable" in erreur_str:
                             
-                            st.warning("⚠️ Modèle principal saturé ou quota atteint (Erreur de serveur). Basculement automatique sur la version Lite...")
+                            # AVERTISSEMENT EXPLICITE SUR LE MODE DÉGRADÉ
+                            st.warning("⚠️ Modèle principal indisponible. Passage en mode Lite (rapide). **Les puissances électriques ne seront pas extraites** et devront être saisies manuellement.")
                             
-                            # TENTATIVE 2 : On bascule sur Flash Lite
+                            # TENTATIVE 2 : On bascule sur Flash Lite avec le PROMPT SIMPLIFIÉ
                             reponse_ia = client_gemini.models.generate_content(
                                 model='gemini-3.1-flash-lite', 
-                                contents=[fichier_upload, PROMPT_VMC],
+                                contents=[fichier_upload, PROMPT_VMC_LITE], # Attention, PROMPT_VMC_LITE ici !
                                 config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.0)
                             )
                         else:
-                            # Si c'est une VRAIE erreur inattendue (ex: PDF corrompu), on l'affiche
                             raise e
                     
                     client_gemini.files.delete(name=fichier_upload.name)
