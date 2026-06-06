@@ -122,9 +122,14 @@ def fetch_gouv_data(siret_cible):
             # On isole l'agence scannée par l'utilisateur
             agence_cible = next((a for a in toutes_agences if a.get('siret') == siret_cible), None)
             
-            # Si le SIRET précis n'est pas dans la liste, on prend le premier par défaut
-            if not agence_cible and toutes_agences:
-                agence_cible = toutes_agences[0] 
+            # NOUVEAU : Si l'agence cible n'existe pas, on lève un drapeau d'erreur
+            if not agence_cible:
+                return {
+                    "trouve": False,
+                    "erreur_siret": True,  # Flag pour identifier une erreur de NIC
+                    "nom": nom_exact,
+                    "autres_agences": toutes_agences # On renvoie quand même les vraies agences pour aider l'utilisateur
+                }
             
             # On stocke les autres agences (pour l'historique d'ouverture/fermeture)
             autres_agences = [a for a in toutes_agences if a.get('siret') != siret_cible]

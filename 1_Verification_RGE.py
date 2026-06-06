@@ -181,7 +181,7 @@ if st.button("🔍 Analyser les SIRET", type="primary"):
                     })
                 else:
                     # ---> L'ENTREPRISE N'EST PAS RGE (ou introuvable)
-                    nom_ent = gouv_data.get("nom") if gouv_data.get("trouve") else "Introuvable"
+                    nom_ent = gouv_data.get("nom") if (gouv_data.get("trouve") or gouv_data.get("erreur_siret")) else "Introuvable"
                     all_results.append({
                         "SIRET": s, 
                         "Entreprise": nom_ent, 
@@ -202,10 +202,30 @@ if 'audit_results' in st.session_state:
 
     for res in st.session_state.audit_results:
         gouv = res.get('gouv_data', {})
-        titre_expander = f"🏢 {res['Entreprise']} ({res['SIRET']})"
         
-        # Ajout de l'état d'ouverture (Gouv)
-        if gouv.get("trouve"):
+        # MODIFIÉ ICI : Titre spécifique si le NIC est faux
+        if gouv.get("erreur_siret"):
+            titre_expander = f"❌ ERREUR DE SAISIE : SIRET {res['SIRET']} invalide ({res['Entreprise']})"
+        else:
+            titre_expander = f"🏢 {res['Entreprise']} ({res['SIRET']})"
+            
+            # Ajout de l'état d'ouverture (Gouv)
+            if gouv.get("trouve"):
+                d_crea = gouv.get('date_creation')
+                d_ferm = gouv.get('date_fermeture')
+                etat = gouv.get('etat_admin', 'A')
+                
+                d_crea_str = datetime.strptime(d_crea, '%Y-%m-%d').strftime('%d/%m/%Y') if d_crea else "?"
+                
+                if etat == 'F' or d_ferm:
+                    d_ferm_str = datetime.strptime(d_ferm, '%Y-%m-%d').strftime('%d/%m/%Y') if d_ferm else "?"
+                    titre_expander += f" — 🔴 Fermée (Ouverte le {d_crea_str}, Fermée le {d_ferm_str})"
+                else:
+                    titre_expander += f" — 🟢 Ouverte depuis le {d_crea_str}"
+
+        # Alerte NON RGE directement dans le titre (uniquement si ce n'est pas une erreur de SIRET)
+        if not res.get("is_rge") and not gouv.get("erreur_siret"):
+            titre_expander += " — ⚠️ ATTENTION : N'EST PAS RGE (Aucune donnée ADEME)"
             d_crea = gouv.get('date_creation')
             d_ferm = gouv.get('date_fermeture')
             etat = gouv.get('etat_admin', 'A')
@@ -228,38 +248,33 @@ if 'audit_results' in st.session_state:
             if not res.get("is_rge"):
                 if gouv.get("trouve"):
                     col_identite, col_statut_adresse, col_agences = st.columns([1, 1.2, 1.5])
+                    # ... [Garde ton code existant ici pour l'affichage classique] ...
                     
-                    with col_identite:
-                        st.markdown(f"**🏢 Nom :** {res['Entreprise']}")
-                        st.markdown(f"**🔢 SIRET :** {res['SIRET']}")
-                        
-                    with col_statut_adresse:
-                        statut_badge = '🔴 Fermée' if gouv.get('etat_admin') == 'F' else '🟢 Active'
-                        st.markdown(f"**📊 Statut :** {statut_badge}")
-                        st.markdown(f"**📍 Adresse :** {gouv.get('adresse_complete', 'Inconnue')}")
+                # NOUVEAU BLOC : Prise en charge de l'erreur de NIC
+                elif gouv.get("erreur_siret"):
+                    st.error(f"❌ **Erreur de saisie** : Le SIRET **{res['SIRET']}** n'existe pas.")
+                    st.warning(f"💡 Le SIREN correspond bien à l'entreprise **{gouv.get('nom')}**, mais la fin du numéro (le NIC) est incorrecte.")
                     
-                    with col_agences:
-                        autres = gouv.get('autres_agences', [])
-                        if autres:
-                            with st.expander(f"📍 Voir les autres agences ({len(autres)})", expanded=False):
-                                for a in autres: 
-                                    etat_a = a.get('etat_administratif')
-                                    s_badge = "🔴 Fermée" if etat_a == 'F' else "🟢 Active"
+                    autres = gouv.get('autres_agences', [])
+                    if autres:
+                        with st.expander(f"📍 Voir les agences valides pour cette entreprise ({len(autres)})", expanded=False):
+                            for a in autres:
+                                etat_a = a.get('etat_administratif')
+                                s_badge = "🔴 Fermée" if etat_a == 'F' else "🟢 Active"
+                                
+                                d_ouv_raw = a.get('date_creation')
+                                d_ferm_raw = a.get('date_fermeture')
+                                d_ouv = datetime.strptime(d_ouv_raw, '%Y-%m-%d').strftime('%d/%m/%Y') if d_ouv_raw else "?"
+                                
+                                if etat_a == 'F' or d_ferm_raw:
+                                    d_ferm_a = datetime.strptime(d_ferm_raw, '%Y-%m-%d').strftime('%d/%m/%Y') if d_ferm_raw else "?"
+                                    texte_date = f"du {d_ouv} au {d_ferm_a}"
+                                else:
+                                    texte_date = f"depuis le {d_ouv}"
                                     
-                                    d_ouv_raw = a.get('date_creation')
-                                    d_ferm_raw = a.get('date_fermeture')
-                                    d_ouv = datetime.strptime(d_ouv_raw, '%Y-%m-%d').strftime('%d/%m/%Y') if d_ouv_raw else "?"
-                                    
-                                    if etat_a == 'F' or d_ferm_raw:
-                                        d_ferm_a = datetime.strptime(d_ferm_raw, '%Y-%m-%d').strftime('%d/%m/%Y') if d_ferm_raw else "?"
-                                        texte_date = f"du {d_ouv} au {d_ferm_a}"
-                                    else:
-                                        texte_date = f"depuis le {d_ouv}"
-                                        
-                                    st.markdown(f"- **{a.get('siret')}** ({a.get('libelle_commune', 'Inconnu')}) : {s_badge} *({texte_date})*")
-                        else:
-                            st.caption("ℹ️ Aucune autre agence pour ce SIREN")
-                            
+                                st.markdown(f"- **{a.get('siret')}** ({a.get('libelle_commune', 'Inconnu')}) : {s_badge} *({texte_date})*")
+                
+                # ...
                 else:
                     st.error(f"❌ SIRET {res['SIRET']} totalement introuvable (ni RGE, ni dans la base du Gouvernement).")
                 
