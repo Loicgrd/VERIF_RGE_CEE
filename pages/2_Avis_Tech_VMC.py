@@ -219,7 +219,7 @@ with tab_consult:
                 except: fin_str = "Inconnue"
 
                 is_expanded = is_recent
-                badge = "🟢 Version Récente" if is_recent else "🕰️ Historique"
+                badge = "🟢 Version Récente (à date d'engagement)" if is_recent else "🕰️ Historique"
                 
                 titre_bandeau = f"🏭 {doc.get('distributeur', doc.get('titulaire', 'Inconnu'))}  |  📄 {full_atec}  |  📅 {deb_str} ➡️ {fin_str}  |  {badge}"
 
@@ -258,9 +258,9 @@ with tab_consult:
 
                             lignes_modeles = []
                             for m in modeles_groupes.values():
-                                bp = " | BP: ✅" if m['basse_pression'] else ""
-                                df = " | DF: 🔄" if m['double_flux'] else ""
-                                cm = " | CM: 📈" if m['courbe_montante'] else ""
+                                bp = " | Basse Pression: ✅" if m['basse_pression'] else ""
+                                df = " | Double Flux: 🔄" if m['double_flux'] else ""
+                                cm = " | Courbe Montante: 📈" if m['courbe_montante'] else ""
                                 type_log = f" ({m['type_logement']})"
                                 def tri_numerique(val):
                                     nombres = re.findall(r'\d+', val)
