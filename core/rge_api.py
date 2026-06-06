@@ -3,9 +3,14 @@ import requests
 import urllib.parse
 import streamlit as st
 from datetime import datetime
+import sys
+import os
+
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 # On importe la fonction locale depuis le dossier database
-from database.local_backup import fetch_local_backup
+from database.RGE.local_backup import fetch_local_backup
 
 MAP_CEE = {
 # --- ENVELOPPE (RGE Isolation / Menuiserie) ---
@@ -16,7 +21,7 @@ MAP_CEE = {
     "Isolation des combles perdus": ["EN101"],
     "Isolation des toitures terrasses ou des toitures par l'extérieur": ["EN105"],
     "Isolation des murs et planchers bas 2020": ["EN102", "EN103", "EN107"],
-    "Isolation par l'intérieur des murs ou rampants de toitures ou plafonds": ["EN101", "EN102"],
+    "Isolation par l'intérieur des murs ou rampants de toitures  ou plafonds": ["EN101", "EN102"],
     "Isolation des murs par l'extérieur": ["EN102"],
     "Isolation des planchers bas": ["EN103"],
 
@@ -117,9 +122,14 @@ def fetch_gouv_data(siret_cible):
             # On isole l'agence scannée par l'utilisateur
             agence_cible = next((a for a in toutes_agences if a.get('siret') == siret_cible), None)
             
-            # Si le SIRET précis n'est pas dans la liste, on prend le premier par défaut
-            if not agence_cible and toutes_agences:
-                agence_cible = toutes_agences[0] 
+            # NOUVEAU : Si l'agence cible n'existe pas, on lève un drapeau d'erreur
+            if not agence_cible:
+                return {
+                    "trouve": False,
+                    "erreur_siret": True,  # Flag pour identifier une erreur de NIC
+                    "nom": nom_exact,
+                    "autres_agences": toutes_agences # On renvoie quand même les vraies agences pour aider l'utilisateur
+                }
             
             # On stocke les autres agences (pour l'historique d'ouverture/fermeture)
             autres_agences = [a for a in toutes_agences if a.get('siret') != siret_cible]
