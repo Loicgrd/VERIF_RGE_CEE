@@ -33,6 +33,8 @@ client_gemini = init_gemini()
 
 if 'prefill_data' not in st.session_state:
     st.session_state['prefill_data'] = {}
+if 'num_avis_input' not in st.session_state:
+    st.session_state['num_avis_input'] = ""
 
 @st.cache_data(ttl=600)
 def fetch_all_atec():
@@ -45,9 +47,26 @@ if not donnees_atec:
     st.warning("Aucune donnée trouvée dans la base.")
     st.stop()
 
-# --- FORMATAGE DU NUMERO ---
+# --- UTILS & NORMALISATION ---
+def normaliser_numero(num):
+    """Normalise les numéros pour éviter les blocages dus aux espaces ou tirets."""
+    if not num:
+        return ""
+    return re.sub(r'[^0-9a-z/]', '', str(num).lower().strip())
+
+def normaliser_revision(rev):
+    """Normalise la révision (ex: V12 -> 12, Modificatif 1 -> m1) pour un match parfait."""
+    if not rev: 
+        return "1"
+    r = str(rev).lower().strip()
+    r = re.sub(r'[^0-9a-z]', '', r)
+    r = re.sub(r'^v', '', r) # Enlève le 'v' initial pour que v12 match avec 12
+    if not r: 
+        return "1"
+    return r
+
 def parse_numero_complet(texte_complet):
-    """Sépare '14.5/17-2273_v6' en ('14.5/17-2273', 'V6') pour la base de données."""
+    """Sépare '14.5/17-2273_v6' en ('14.5/17-2273', 'V6')."""
     if not texte_complet:
         return "", "V1"
     if "_" in texte_complet:
@@ -55,12 +74,32 @@ def parse_numero_complet(texte_complet):
         return parties[0].strip(), parties[1].strip().upper()
     return texte_complet.strip(), "V1"
 
+def formater_modeles_pour_comparaison(doc):
+    """Prépare les données pour l'affichage visuel de comparaison (incluant l'URL)."""
+    modeles = doc.get('modeles', [])
+    url = doc.get('url_batipedia') or 'Aucune URL enregistrée'
+    
+    res = []
+    for m in modeles:
+        res.append({
+            "Modèle": m.get('nom_modele', ''),
+            "Logement": m.get('type_logement', ''),
+            "BP ⬇️": m.get('basse_pression', False),
+            "DF 🔄": m.get('double_flux', False),
+            "CM 📈": m.get('courbe_montante', False),
+            "Débits": format_debits_to_str(m.get('debits_disponibles', [])),
+            "W-Th-C (A)": m.get('puissance_hygro_a', ''),
+            "W-Th-C (B)": m.get('puissance_hygro_b', '')
+        })
+    return url, pd.DataFrame(res)
 
+# --- CONFIGURATION DES COLONNES DATA EDITOR ---
 config_colonnes = {
     "nom_modele": st.column_config.TextColumn("📦 Modèle", required=True),
     "type_logement": st.column_config.SelectboxColumn("🏠 Logement", options=["Collectif", "Individuel", "Mixte"]),
     "basse_pression": st.column_config.CheckboxColumn("⬇️ Basse Pression"),
     "double_flux": st.column_config.CheckboxColumn("🔄 Double Flux"),
+    "courbe_montante": st.column_config.CheckboxColumn("📈 Courbe Montante"),
     "debits_disponibles": st.column_config.TextColumn("💨 Débits"),
     "puissance_hygro_a": st.column_config.TextColumn("⚡ WThC (Hygro A)"),
     "puissance_hygro_b": st.column_config.TextColumn("⚡ WThC (Hygro B)")
@@ -92,8 +131,6 @@ with tab_consult:
     else:
         st.session_state['recherche_active'] = True
         
-        # --- LOGIQUE D'EXTRACTION ET DE GROUPEMENT ROBUSTE ---
-        # 1. Trouver les familles (numéros de base) d'avis correspondant aux filtres texte/marque
         bases_retenues = set()
         for doc in donnees_atec:
             num_atec = str(doc.get('numero_atec', ''))
@@ -114,7 +151,6 @@ with tab_consult:
             if match_marque and match_texte:
                 bases_retenues.add(base_num)
         
-        # 2. Re-sélectionner TOUTES les versions pour ces familles (évite la perte d'historique)
         resultats_filtres = []
         for doc in donnees_atec:
             base_num = str(doc.get('numero_atec', '')).split('_')[0].strip()
@@ -133,22 +169,15 @@ with tab_consult:
         if len(resultats_filtres) == 0:
             st.info("Aucun Avis Technique ne correspond à ces critères.")
         else:
-            # 3. Tri ordonné : par numéro de base, puis par indice de révision décroissant
             def get_sort_key(d):
                 base = str(d.get('numero_atec', '')).split('_')[0].strip()
                 rev_str = str(d.get('indice_revision', 'V1')).upper().replace('V', '').replace('MODIFICATIF', '').strip()
-                try: 
-                    rev_num = int(rev_str)
-                except ValueError: 
-                    rev_num = 0
-                
-                # CORRECTION : On ne trie plus par distributeur en premier !
-                # Ainsi, les variations d'orthographe (V.T.I vs VTI) ne séparent plus la famille.
+                try: rev_num = int(rev_str)
+                except ValueError: rev_num = 0
                 return (base, -rev_num)
 
             resultats_finaux = sorted(resultats_filtres, key=get_sort_key)
 
-            # 4. Identification dynamique de la version la plus haute à l'écran
             bases_vues = set()
             for d in resultats_finaux:
                 base = str(d.get('numero_atec', '')).split('_')[0].strip()
@@ -158,9 +187,21 @@ with tab_consult:
                 else:
                     d['_est_version_recente'] = False
 
-            st.caption(f"**{len(resultats_finaux)} résultat(s) trouvé(s)**")
+            nb_recents = sum(1 for d in resultats_finaux if d.get('_est_version_recente'))
+            nb_anciens = len(resultats_finaux) - nb_recents
+
+            st.caption(f"**{nb_recents} Avis Technique(s) récent(s) trouvé(s)** (et {nb_anciens} version(s) dans l'historique)")
+            
+            afficher_anciens = True
+            if nb_anciens > 0:
+                afficher_anciens = st.toggle("📂 Afficher les avis techniques plus anciens", value=False)
             
             for doc in resultats_finaux:
+                is_recent = doc.get('_est_version_recente', False)
+                
+                if not is_recent and not afficher_anciens:
+                    continue
+
                 revision = doc.get('indice_revision') or 'V1'
                 full_atec = f"{doc.get('numero_atec', 'Inconnu')}_{revision}"
 
@@ -177,9 +218,8 @@ with tab_consult:
                 try: fin_str = datetime.datetime.strptime(doc.get('fin_validite', ''), "%Y-%m-%d").date().strftime("%d/%m/%Y")
                 except: fin_str = "Inconnue"
 
-                # REIFICATION ICI : La version récente reste ouverte, l'historique se ferme de manière isolée
-                is_expanded = doc.get('_est_version_recente', False)
-                badge = "🟢 Version Récente" if doc.get('_est_version_recente') else "🕰️ Historique"
+                is_expanded = is_recent
+                badge = "🟢 Version Récente" if is_recent else "🕰️ Historique"
                 
                 titre_bandeau = f"🏭 {doc.get('distributeur', doc.get('titulaire', 'Inconnu'))}  |  📄 {full_atec}  |  📅 {deb_str} ➡️ {fin_str}  |  {badge}"
 
@@ -204,12 +244,13 @@ with tab_consult:
                                 if nom_base not in modeles_groupes:
                                     modeles_groupes[nom_base] = {
                                         'nom_modele': nom_base, 'type_logement': m.get('type_logement', 'N/A'), 
-                                        'basse_pression': False, 'double_flux': False, 'debits': set(),
-                                        'pw_a': set(), 'pw_b': set()
+                                        'basse_pression': False, 'double_flux': False, 'courbe_montante': False,
+                                        'debits': set(), 'pw_a': set(), 'pw_b': set()
                                     }
                                 
                                 if m.get('basse_pression'): modeles_groupes[nom_base]['basse_pression'] = True
                                 if m.get('double_flux'): modeles_groupes[nom_base]['double_flux'] = True
+                                if m.get('courbe_montante'): modeles_groupes[nom_base]['courbe_montante'] = True
                                 if debit_extrait: modeles_groupes[nom_base]['debits'].add(debit_extrait)
                                 if m.get('debits_disponibles'): modeles_groupes[nom_base]['debits'].update(m.get('debits_disponibles'))
                                 if m.get('puissance_hygro_a'): modeles_groupes[nom_base]['pw_a'].add(str(m['puissance_hygro_a']))
@@ -219,6 +260,7 @@ with tab_consult:
                             for m in modeles_groupes.values():
                                 bp = " | BP: ✅" if m['basse_pression'] else ""
                                 df = " | DF: 🔄" if m['double_flux'] else ""
+                                cm = " | CM: 📈" if m['courbe_montante'] else ""
                                 type_log = f" ({m['type_logement']})"
                                 def tri_numerique(val):
                                     nombres = re.findall(r'\d+', val)
@@ -227,7 +269,7 @@ with tab_consult:
                                 debits_str = f" ({', '.join(liste_debits)})" if liste_debits else ""
                                 pw_a_str = f" | W-Th-C (A): {', '.join(m['pw_a'])}" if m['pw_a'] else ""
                                 pw_b_str = f" | W-Th-C (B): {', '.join(m['pw_b'])}" if m['pw_b'] else ""
-                                lignes_modeles.append(f"- **{m['nom_modele']}**{debits_str} {type_log}{bp}{df}{pw_a_str}{pw_b_str}")
+                                lignes_modeles.append(f"- **{m['nom_modele']}**{debits_str} {type_log}{bp}{df}{cm}{pw_a_str}{pw_b_str}")
                             
                             st.markdown("\n".join(lignes_modeles))
                     
@@ -256,53 +298,61 @@ with tab_consult:
                                 if log_db not in ["Collectif", "Individuel", "Mixte"]: log_db = "Collectif"
                                 lignes_df.append({
                                     "nom_modele": m.get('nom_modele', ''), "type_logement": log_db, 
-                                    "basse_pression": bool(m.get('basse_pression', False)), "double_flux": bool(m.get('double_flux', False)),
+                                    "basse_pression": bool(m.get('basse_pression', False)), 
+                                    "double_flux": bool(m.get('double_flux', False)),
+                                    "courbe_montante": bool(m.get('courbe_montante', False)),
                                     "debits_disponibles": format_debits_to_str(m.get('debits_disponibles', [])),
                                     "puissance_hygro_a": str(m.get('puissance_hygro_a', '') or ''), "puissance_hygro_b": str(m.get('puissance_hygro_b', '') or '')
                                 })
                             
-                            if not lignes_df: lignes_df.append({"nom_modele": "", "type_logement": "Collectif", "basse_pression": False, "double_flux": False, "debits_disponibles": "", "puissance_hygro_a": "", "puissance_hygro_b": ""})
+                            if not lignes_df: 
+                                lignes_df.append({"nom_modele": "", "type_logement": "Collectif", "basse_pression": False, "double_flux": False, "courbe_montante": False, "debits_disponibles": "", "puissance_hygro_a": "", "puissance_hygro_b": ""})
                                 
                             df_edit = pd.DataFrame(lignes_df)
                             edited_df_mod = st.data_editor(df_edit, num_rows="dynamic", column_config=config_colonnes, hide_index=True, use_container_width=True, key=f"grid_{doc['id']}")
 
                             if st.form_submit_button("💾 Sauvegarder les modifications", type="primary"):
-                                mod_num, mod_rev = parse_numero_complet(mod_full_num)
-                                
-                                modeles_json_mod = []
-                                for _, row in edited_df_mod.iterrows():
-                                    if row['nom_modele'].strip():
-                                        modeles_json_mod.append({
-                                            "nom_modele": row['nom_modele'], "type_logement": row['type_logement'], 
-                                            "basse_pression": bool(row['basse_pression']), "double_flux": bool(row['double_flux']),
-                                            "debits_disponibles": parse_debits_from_str(row['debits_disponibles']),
-                                            "puissance_hygro_a": str(row['puissance_hygro_a']).strip() if row['puissance_hygro_a'] else None,
-                                            "puissance_hygro_b": str(row['puissance_hygro_b']).strip() if row['puissance_hygro_b'] else None
-                                        })
-                                
-                                doc_update = {
-                                    "numero_atec": mod_num, "indice_revision": mod_rev, "titulaire": mod_tit, "distributeur": mod_dist,
-                                    "debut_validite": mod_deb.strftime("%Y-%m-%d") if mod_deb else None, "fin_validite": mod_fin.strftime("%Y-%m-%d") if mod_fin else None,
-                                    "url_batipedia": mod_url, "modeles": modeles_json_mod
-                                }
-                                
-                                supabase.table("referentiel_vmc").update(doc_update).eq("id", doc['id']).execute()
-                                st.success("Modifications sauvegardées avec succès !")
-                                fetch_all_atec.clear()
-                                st.rerun()
+                                try:
+                                    mod_num, mod_rev = parse_numero_complet(mod_full_num)
+                                    
+                                    modeles_json_mod = []
+                                    for _, row in edited_df_mod.iterrows():
+                                        if row['nom_modele'].strip():
+                                            modeles_json_mod.append({
+                                                "nom_modele": row['nom_modele'], "type_logement": row['type_logement'], 
+                                                "basse_pression": bool(row['basse_pression']), 
+                                                "double_flux": bool(row['double_flux']),
+                                                "courbe_montante": bool(row['courbe_montante']),
+                                                "debits_disponibles": parse_debits_from_str(row['debits_disponibles']),
+                                                "puissance_hygro_a": str(row['puissance_hygro_a']).strip() if row['puissance_hygro_a'] else None,
+                                                "puissance_hygro_b": str(row['puissance_hygro_b']).strip() if row['puissance_hygro_b'] else None
+                                            })
+                                    
+                                    doc_update = {
+                                        "numero_atec": mod_num, "indice_revision": mod_rev, "titulaire": mod_tit, "distributeur": mod_dist,
+                                        "debut_validite": mod_deb.strftime("%Y-%m-%d") if mod_deb else None, "fin_validite": mod_fin.strftime("%Y-%m-%d") if mod_fin else None,
+                                        "url_batipedia": mod_url, "modeles": modeles_json_mod
+                                    }
+                                    
+                                    supabase.table("referentiel_vmc").update(doc_update).eq("id", doc['id']).execute()
+                                    st.success("Modifications sauvegardées avec succès !")
+                                    fetch_all_atec.clear()
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"❌ Erreur lors de la sauvegarde : {e}")
 
 # =====================================================================
-# ONGLET 2 : AJOUTER UN NOUVEL AVIS MANUELLEMENT (AVEC IA)
+# ONGLET 2 : AJOUTER OU ENRICHIR UN AVIS (UPSERT INTELLIGENT)
 # =====================================================================
 with tab_ajout:
-    st.header("➕ Ajouter un nouvel Avis Technique")
-    st.info("Importez le PDF de l'Avis Technique. Gemini va le lire et pré-remplir tous les champs ci-dessous pour vous !")
+    st.header("➕ Ajouter ou Mettre à jour un Avis Technique")
+    st.info("Importez le PDF de l'Avis Technique. Si le document existe déjà sous ce numéro, l'application vous permettra de comparer et d'enrichir les lignes.")
     
     fichier_pdf = st.file_uploader("Glissez le PDF ici", type=["pdf"])
     
     if fichier_pdf:
         if st.button("✨ Analyser et Pré-remplir", type="primary", use_container_width=True):
-            with st.spinner("Analyse du document en cours (environ 10 secondes)..."):
+            with st.spinner("Analyse du document en cours (environ 10-15 secondes)..."):
                 try:
                     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
                         tmp_file.write(fichier_pdf.getvalue())
@@ -311,25 +361,18 @@ with tab_ajout:
                     fichier_upload = client_gemini.files.upload(file=tmp_path)
                     
                     try:
-                        # TENTATIVE 1 : On essaie avec Gemini 1.5 Flash (Le plus intelligent)
                         reponse_ia = client_gemini.models.generate_content(
                             model='gemini-3.5-flash', 
-                            contents=[fichier_upload, PROMPT_VMC], # Prompt complet
+                            contents=[fichier_upload, PROMPT_VMC],
                             config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.0)
                         )
-                        
                     except Exception as e:
                         erreur_str = str(e).lower()
-                        
                         if "429" in erreur_str or "503" in erreur_str or "quota" in erreur_str or "unavailable" in erreur_str:
-                            
-                            # AVERTISSEMENT EXPLICITE SUR LE MODE DÉGRADÉ
-                            st.warning("⚠️ Modèle principal indisponible. Passage en mode Lite (rapide). **Les puissances électriques ne seront pas extraites** et devront être saisies manuellement.")
-                            
-                            # TENTATIVE 2 : On bascule sur Flash Lite avec le PROMPT SIMPLIFIÉ
+                            st.warning("⚠️ Modèle principal indisponible. Passage en mode Lite (rapide). Les puissances ne seront pas lues automatiquement.")
                             reponse_ia = client_gemini.models.generate_content(
                                 model='gemini-3.1-flash-lite', 
-                                contents=[fichier_upload, PROMPT_VMC_LITE], # Attention, PROMPT_VMC_LITE ici !
+                                contents=[fichier_upload, PROMPT_VMC_LITE],
                                 config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.0)
                             )
                         else:
@@ -344,36 +387,29 @@ with tab_ajout:
                     
                     donnees_extraites = json.loads(raw_text)
                     
-                    donnees_extraites = json.loads(raw_text)
-                    
-                    # --- NOUVEAU : FILTRE POST-IA (NETTOYAGE DES FAUX MODÈLES) ---
                     if "modeles" in donnees_extraites:
                         vrais_modeles = []
-                        # Liste des mots qui prouvent que ce n'est pas un nom commercial
-                        mots_interdits = [
-                            "débits", "décroissants", "config", "bouches", "pmin", 
-                            "multipiquage", "courbe", "caractéristique",
-                            "b100", "b200", "fan_", "-fan", "t.flow", "thermodynamique"
-                        ]
-                        
+                        mots_interdits = ["débits", "décroissants", "config", "bouches", "pmin", "multipiquage", "courbe", "caractéristique", "b100", "b200", "fan_", "-fan", "t.flow", "thermodynamique"]
                         for m in donnees_extraites["modeles"]:
                             nom = str(m.get("nom_modele", "")).lower()
-                            
-                            # On garde le modèle SI : 
-                            # 1. Le nom fait moins de 45 caractères (un nom commercial est court)
-                            # 2. Il ne contient aucun mot interdit
                             if len(nom) < 45 and not any(mot in nom for mot in mots_interdits):
                                 vrais_modeles.append(m)
-                                
-                        # On remplace la liste brute par la liste nettoyée
                         donnees_extraites["modeles"] = vrais_modeles
-                    # -------------------------------------------------------------
                     
                     if donnees_extraites.get("est_vmc") is False:
                         st.error("⚠️ L'IA a détecté que ce document ne concerne pas une VMC.")
                     else:
-                        st.success("Analyse réussie ! Les champs ont été pré-remplis.")
+                        st.success("Analyse terminée avec succès ! Vérifiez les éléments ci-dessous.")
                         st.session_state['prefill_data'] = donnees_extraites
+                        
+                        # --- Mise à jour du champ texte réactif ---
+                        p_num = donnees_extraites.get("numero_atec", "")
+                        p_rev = donnees_extraites.get("indice_revision", "V1") or "V1"
+                        if p_num and "_" not in p_num:
+                            st.session_state['num_avis_input'] = f"{p_num}_{p_rev}"
+                        elif p_num:
+                            st.session_state['num_avis_input'] = p_num
+                            
                         st.rerun()
 
                 except Exception as e:
@@ -381,18 +417,99 @@ with tab_ajout:
 
     st.divider()
 
-    prefill = st.session_state.get('prefill_data', {})
-    prefill_num = prefill.get("numero_atec", "")
-    if prefill_num and prefill.get("indice_revision") and "_" not in prefill_num:
-        prefill_num = f"{prefill_num}_{prefill['indice_revision']}"
+    # --- CHAMP REACTIF (SORTI DU FORMULAIRE) ---
+    st.markdown("### 📝 Informations Générales")
     
+    in_full_num = st.text_input(
+        "Numéro d'Avis complet (ex: 14.5/17-2273_V2)", 
+        key="num_avis_input", 
+        help="Saisissez ou modifiez le numéro ici. S'il existe en base, l'application vous alertera immédiatement."
+    )
+
+    prefill = st.session_state.get('prefill_data', {})
+
+    # --- DETECTION ET INTERFACE DE CONFLIT DÈS L'ANALYSE ---
+    mode_update_propose = False
+    doc_existant_decouvert = None
+    
+    if in_full_num:
+        in_num_check, in_rev_check = parse_numero_complet(in_full_num)
+        norm_p_num = normaliser_numero(in_num_check)
+        norm_p_rev = normaliser_revision(in_rev_check)
+        
+        doc_existant_decouvert = next((d for d in donnees_atec if normaliser_numero(d.get('numero_atec')) == norm_p_num and normaliser_revision(d.get('indice_revision', 'V1')) == norm_p_rev), None)
+
+    if doc_existant_decouvert:
+        st.warning(f"⚠️ **Attention : L'Avis {in_num_check} (Révision {in_rev_check}) existe déjà dans votre base de données.**")
+        
+        # --- NOUVEAU : AFFICHAGE PLEINE LARGEUR AVEC URL ---
+        url_base, df_base = formater_modeles_pour_comparaison(doc_existant_decouvert)
+        
+        with st.expander("🔍 Voir les données actuellement enregistrées en base", expanded=True):
+            st.markdown("### 🗄️ Actuellement en Base")
+            st.caption(f"Titulaire : {doc_existant_decouvert.get('titulaire', 'N/A')} | Validité : {doc_existant_decouvert.get('debut_validite', '-')} au {doc_existant_decouvert.get('fin_validite', '-')}")
+            
+            st.markdown(f"**🔗 URL Batipedia :** {url_base}")
+            
+            if not df_base.empty:
+                st.dataframe(df_base, hide_index=True, use_container_width=True)
+            else:
+                st.info("Aucun modèle enregistré pour cet Avis.")
+        # -----------------------------------------------------
+
+        col_c1, col_c2 = st.columns([3, 2])
+        with col_c1:
+            choix_doublon = st.radio(
+                "👉 Que souhaitez-vous faire pour cet enregistrement ?",
+                [
+                    "🔄 Remplacer ou Enrichir l'Avis existant (Mise à jour sans doublon)",
+                    "❌ Annuler / Bloquer l'enregistrement (Éviter d'écraser la base)"
+                ],
+                key="radio_doublon_decision"
+            )
+            if choix_doublon == "🔄 Remplacer ou Enrichir l'Avis existant (Mise à jour sans doublon)":
+                mode_update_propose = True
+                
+        with col_c2:
+            st.markdown("<br>", unsafe_allow_html=True)
+            if mode_update_propose:
+                if st.button("🧬 Fusionner l'ancienne base dans le tableau", use_container_width=True):
+                    modeles_existants = doc_existant_decouvert.get('modeles', []) or []
+                    modeles_actuels = prefill.get('modeles', []) or []
+                    
+                    nouveaux_modeles = list(modeles_actuels)
+                    for m_exist in modeles_existants:
+                        nom_exist = str(m_exist.get('nom_modele', '')).lower().strip()
+                        m_actuel = next((m for m in nouveaux_modeles if str(m.get('nom_modele', '')).lower().strip() == nom_exist), None)
+                        
+                        if m_actuel:
+                            if not m_actuel.get('puissance_hygro_a') and m_exist.get('puissance_hygro_a'):
+                                m_actuel['puissance_hygro_a'] = m_exist['puissance_hygro_a']
+                            if not m_actuel.get('puissance_hygro_b') and m_exist.get('puissance_hygro_b'):
+                                m_actuel['puissance_hygro_b'] = m_exist['puissance_hygro_b']
+                            if not m_actuel.get('courbe_montante') and m_exist.get('courbe_montante'):
+                                m_actuel['courbe_montante'] = m_exist['courbe_montante']
+                        else:
+                            nouveaux_modeles.append(m_exist)
+                            
+                    prefill['modeles'] = nouveaux_modeles
+                    if not prefill.get('titulaire'): prefill['titulaire'] = doc_existant_decouvert.get('titulaire')
+                    if not prefill.get('distributeur'): prefill['distributeur'] = doc_existant_decouvert.get('distributeur')
+                    if not prefill.get('debut_validite'): prefill['debut_validite'] = doc_existant_decouvert.get('debut_validite')
+                    if not prefill.get('fin_validite'): prefill['fin_validite'] = doc_existant_decouvert.get('fin_validite')
+                    if not prefill.get('url_batipedia'): prefill['url_batipedia'] = doc_existant_decouvert.get('url_batipedia')
+                    
+                    st.session_state['prefill_data'] = prefill
+                    st.toast("🧬 Données historiques fusionnées avec succès !", icon="✅")
+                    st.rerun()
+
+    # --- LE FORMULAIRE DE RELECTURE ET SAUVEGARDE ---
     with st.form("form_add_atec"):
         col1, col2 = st.columns(2)
         with col1:
-            in_full_num = st.text_input("Numéro d'Avis complet (ex: 14.5/17-2273_V2)", value=prefill_num)
             in_tit = st.text_input("Titulaire (ex: ALDES)", value=prefill.get("titulaire", ""))
-        with col2:
             in_dist = st.text_input("Distributeur (Marque commerciale)", value=prefill.get("distributeur", ""))
+        with col2:
             try: def_deb = datetime.datetime.strptime(prefill.get('debut_validite', ''), "%Y-%m-%d").date()
             except: def_deb = None
             try: def_fin = datetime.datetime.strptime(prefill.get('fin_validite', ''), "%Y-%m-%d").date()
@@ -401,9 +518,9 @@ with tab_ajout:
             in_deb = st.date_input("Début de validité", value=def_deb, format="DD/MM/YYYY")
             in_fin = st.date_input("Fin de validité", value=def_fin, format="DD/MM/YYYY")
         
-        in_url = st.text_input("Lien URL Batipedia (Optionnel)")
+        in_url = st.text_input("Lien URL Batipedia (Optionnel)", value=prefill.get("url_batipedia", ""))
         
-        st.markdown("**Caissons / Modèles**")
+        st.markdown("**Caissons / Modèles à enregistrer**")
         
         lignes_df_new = []
         if prefill.get("modeles"):
@@ -412,52 +529,71 @@ with tab_ajout:
                 if log_db not in ["Collectif", "Individuel", "Mixte"]: log_db = "Collectif"
                 lignes_df_new.append({
                     "nom_modele": m.get('nom_modele', ''), "type_logement": log_db,
-                    "basse_pression": bool(m.get('basse_pression', False)), "double_flux": bool(m.get('double_flux', False)),
+                    "basse_pression": bool(m.get('basse_pression', False)), 
+                    "double_flux": bool(m.get('double_flux', False)),
+                    "courbe_montante": bool(m.get('courbe_montante', False)),
                     "debits_disponibles": format_debits_to_str(m.get('debits_disponibles', [])),
                     "puissance_hygro_a": str(m.get('puissance_hygro_a', '') or ''), "puissance_hygro_b": str(m.get('puissance_hygro_b', '') or '')
                 })
         
         if not lignes_df_new:
-            lignes_df_new.append({"nom_modele": "", "type_logement": "Collectif", "basse_pression": False, "double_flux": False, "debits_disponibles": "", "puissance_hygro_a": "", "puissance_hygro_b": ""})
+            lignes_df_new.append({"nom_modele": "", "type_logement": "Collectif", "basse_pression": False, "double_flux": False, "courbe_montante": False, "debits_disponibles": "", "puissance_hygro_a": "", "puissance_hygro_b": ""})
             
         df_new = pd.DataFrame(lignes_df_new)
         edited_df_new = st.data_editor(df_new, num_rows="dynamic", column_config=config_colonnes, hide_index=True, use_container_width=True)
 
-        if st.form_submit_button("✅ Enregistrer le nouvel Avis", type="primary"):
-            if not in_full_num or not in_tit:
-                st.error("⚠️ Le Numéro d'Avis et le Titulaire sont obligatoires.")
-            else:
-                try:
-                    in_num, in_rev = parse_numero_complet(in_full_num)
-                    
-                    modeles_json_new = []
-                    for _, row in edited_df_new.iterrows():
-                        if row['nom_modele'].strip():
-                            modeles_json_new.append({
-                                "nom_modele": row['nom_modele'], "type_logement": row['type_logement'],
-                                "basse_pression": bool(row['basse_pression']), "double_flux": bool(row['double_flux']),
-                                "debits_disponibles": parse_debits_from_str(row['debits_disponibles']),
-                                "puissance_hygro_a": str(row['puissance_hygro_a']).strip() if row['puissance_hygro_a'] else None,
-                                "puissance_hygro_b": str(row['puissance_hygro_b']).strip() if row['puissance_hygro_b'] else None
-                            })
-                    
-                    nouveau_doc = {
-                        "numero_atec": in_num, "indice_revision": in_rev,
-                        "titulaire": in_tit, "distributeur": in_dist if in_dist else in_tit,
-                        "debut_validite": in_deb.strftime("%Y-%m-%d") if in_deb else None,
-                        "fin_validite": in_fin.strftime("%Y-%m-%d") if in_fin else None,
-                        "url_batipedia": in_url, "modeles": modeles_json_new
-                    }
-                    
-                    supabase.table("referentiel_vmc").insert(nouveau_doc).execute()
-                    st.success(f"L'Avis {in_num}_{in_rev} a été ajouté avec succès !")
-                    
-                    fetch_all_atec.clear()
-                    st.session_state['prefill_data'] = {}
-                    st.rerun()
+        if doc_existant_decouvert and not mode_update_propose:
+            st.form_submit_button("❌ Enregistrement bloqué (Avis existant)", disabled=True, use_container_width=True)
+        else:
+            label_bouton = "🔄 Écraser & Mettre à jour l'Avis existant" if doc_existant_decouvert else "✅ Enregistrer le nouvel Avis"
+            
+            if st.form_submit_button(label_bouton, type="primary" if not doc_existant_decouvert else "secondary", use_container_width=True):
+                if not in_full_num or not in_tit:
+                    st.error("⚠️ Le Numéro d'Avis et le Titulaire sont obligatoires.")
+                else:
+                    try:
+                        in_num, in_rev = parse_numero_complet(in_full_num)
+                        
+                        # VERIFICATION DE SECURITE AU MOMENT DU CLIC
+                        norm_final_num = normaliser_numero(in_num)
+                        norm_final_rev = normaliser_revision(in_rev)
+                        doc_final_existant = next((d for d in donnees_atec if normaliser_numero(d.get('numero_atec')) == norm_final_num and normaliser_revision(d.get('indice_revision', 'V1')) == norm_final_rev), None)
+                        
+                        if doc_final_existant and not mode_update_propose:
+                            st.error("⚠️ Cet Avis existe déjà dans la base. Veuillez cocher l'option de mise à jour au-dessus du tableau pour valider l'écrasement.")
+                        else:
+                            modeles_json_new = []
+                            for _, row in edited_df_new.iterrows():
+                                if row['nom_modele'].strip():
+                                    modeles_json_new.append({
+                                        "nom_modele": row['nom_modele'], "type_logement": row['type_logement'],
+                                        "basse_pression": bool(row['basse_pression']), 
+                                        "double_flux": bool(row['double_flux']),
+                                        "courbe_montante": bool(row['courbe_montante']),
+                                        "debits_disponibles": parse_debits_from_str(row['debits_disponibles']),
+                                        "puissance_hygro_a": str(row['puissance_hygro_a']).strip() if row['puissance_hygro_a'] else None,
+                                        "puissance_hygro_b": str(row['puissance_hygro_b']).strip() if row['puissance_hygro_b'] else None
+                                    })
+                            
+                            nouveau_doc = {
+                                "numero_atec": in_num, "indice_revision": in_rev,
+                                "titulaire": in_tit, "distributeur": in_dist if in_dist else in_tit,
+                                "debut_validite": in_deb.strftime("%Y-%m-%d") if in_deb else None,
+                                "fin_validite": in_fin.strftime("%Y-%m-%d") if in_fin else None,
+                                "url_batipedia": in_url, "modeles": modeles_json_new
+                            }
+                            
+                            if doc_final_existant:
+                                supabase.table("referentiel_vmc").update(nouveau_doc).eq("id", doc_final_existant['id']).execute()
+                                st.success(f"L'Avis {in_num}_{in_rev} a été mis à jour avec succès !")
+                            else:
+                                supabase.table("referentiel_vmc").insert(nouveau_doc).execute()
+                                st.success(f"L'Avis {in_num}_{in_rev} a été ajouté avec succès !")
+                            
+                            fetch_all_atec.clear()
+                            st.session_state['prefill_data'] = {}
+                            st.session_state['num_avis_input'] = ""
+                            st.rerun()
 
-                except Exception as e:
-                    if "23505" in str(e) or "duplicate key" in str(e):
-                        st.error(f"⚠️ L'Avis Technique **{in_num}** (Révision **{in_rev}**) existe déjà dans la base.")
-                    else:
-                        st.error(f"❌ Erreur inattendue : {e}")
+                    except Exception as e:
+                        st.error(f"❌ Erreur lors de l'enregistrement : {e}")

@@ -14,7 +14,7 @@ Extrais les informations au format JSON strict avec la structure exacte suivante
   "numero_atec": "Ex: 14.5/17-2273",
   "indice_revision": "Ex: 'V2', 'Modificatif 1' ou 'V1' si non précisé",
   "titulaire": "Le(s) constructeur(s) officiel(s)",
-  "distributeur": "La marque commerciale. Si aucune marque distincte, remets le titulaire.",
+  "distributeur": "La marque commerciale. Si aucune marque distincte, remets le titulaire. Enlève le terme "société" s'il fait parti du distributeur",
   "debut_validite": "YYYY-MM-DD",
   "fin_validite": "YYYY-MM-DD",
   "modeles": [
@@ -23,6 +23,7 @@ Extrais les informations au format JSON strict avec la structure exacte suivante
       "type_logement": "'Individuel', 'Collectif' ou 'Mixte'",
       "basse_pression": true ou false,
       "double_flux": true ou false,
+      "courbe_montante": true ou false,
       "debits_disponibles": ["400", "700"],
       "puissance_hygro_a": "Ex: '14.0'",
       "puissance_hygro_b": "Ex: '15.2'"
@@ -51,7 +52,9 @@ RÈGLES D'EXTRACTION ABSOLUES :
    - CAS N°3 (Aucune valeur) : Si la case est vide ou introuvable, mets `null`. Ne duplique jamais la valeur d'un autre modèle pour boucher un trou.
    - FORMAT : Convertis la valeur en format numérique (remplace la virgule par un point, ex: "14.5").
    - Si la case est vide tu mets `puissance_hygro_a` et/ou `puissance_hygro_b` sur la valeur `null`
-8. FORMAT : Renvoie UNIQUEMENT un JSON valide.
+8. COURBE MONTANTE : Attribue `true` si le document mentionne explicitement une "courbe montante" ou "courbe de fonctionnement montante" ou "courbe débit pression montante" pour ce modèle spécifique. Sinon, mets `false`.
+
+9. FORMAT : Renvoie UNIQUEMENT un JSON valide.
 
 RÈGLES CRITIQUES D'EXTRACTION :
 
