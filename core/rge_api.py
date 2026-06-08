@@ -38,6 +38,7 @@ MAP_CEE = {
     "Chauffage et/ou eau chaude solaire": ["TH101", "TH124", "TH143"],
     "Forage géothermique": ["TH178"], # Nécessite RGE QualiForage
     "Panneaux solaires hybrides (Thermique/PV)": ["TH162"],
+    "Radiateurs électriques, dont régulation.": ["TH158"],
 
     # --- VENTILATION (RGE Ventilation) ---
     "Ventilation 2020": ["TH125", "TH127", "TH155"],
