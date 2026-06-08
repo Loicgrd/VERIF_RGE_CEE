@@ -202,9 +202,13 @@ if 'audit_results' in st.session_state:
 
     for res in st.session_state.audit_results:
         gouv = res.get('gouv_data', {})
+        est_rge = res.get("is_rge", False)
         
-        # MODIFIÉ ICI : Titre spécifique si le NIC est faux
-        if gouv.get("erreur_siret"):
+        # CORRECTION DU BUG : Si l'entreprise est RGE, le SIRET est forcément valide
+        erreur_siret = gouv.get("erreur_siret", False) and not est_rge
+
+        # 1. Construction du titre de l'encart
+        if erreur_siret:
             titre_expander = f"❌ ERREUR DE SAISIE : SIRET {res['SIRET']} invalide ({res['Entreprise']})"
         else:
             titre_expander = f"🏢 {res['Entreprise']} ({res['SIRET']})"
@@ -223,35 +227,30 @@ if 'audit_results' in st.session_state:
                 else:
                     titre_expander += f" — 🟢 Ouverte depuis le {d_crea_str}"
 
-        # Alerte NON RGE directement dans le titre (uniquement si ce n'est pas une erreur de SIRET)
-        if not res.get("is_rge") and not gouv.get("erreur_siret"):
-            titre_expander += " — ⚠️ ATTENTION : N'EST PAS RGE (Aucune donnée ADEME)"
-            d_crea = gouv.get('date_creation')
-            d_ferm = gouv.get('date_fermeture')
-            etat = gouv.get('etat_admin', 'A')
-            
-            d_crea_str = datetime.strptime(d_crea, '%Y-%m-%d').strftime('%d/%m/%Y') if d_crea else "?"
-            
-            if etat == 'F' or d_ferm:
-                d_ferm_str = datetime.strptime(d_ferm, '%Y-%m-%d').strftime('%d/%m/%Y') if d_ferm else "?"
-                titre_expander += f" — 🔴 Fermée (Ouverte le {d_crea_str}, Fermée le {d_ferm_str})"
-            else:
-                titre_expander += f" — 🟢 Ouverte depuis le {d_crea_str}"
-
-        # Alerte NON RGE directement dans le titre
-        if not res.get("is_rge"):
-            titre_expander += " — ⚠️ ATTENTION : N'EST PAS RGE (Aucune donnée ADEME)"
+            # Alerte NON RGE directement dans le titre
+            if not est_rge:
+                titre_expander += " — ⚠️ ATTENTION : N'EST PAS RGE (Aucune donnée ADEME)"
         
         with st.expander(titre_expander, expanded=True):
             
             # ---> CAS 1 : ENTREPRISE NON RGE
-            if not res.get("is_rge"):
+            if not est_rge:
                 if gouv.get("trouve"):
                     col_identite, col_statut_adresse, col_agences = st.columns([1, 1.2, 1.5])
-                    # ... [Garde ton code existant ici pour l'affichage classique] ...
+                    with col_identite:
+                        st.markdown(f"**🏢 {res['Entreprise']}**")
+                        st.write(f"SIRET : {res['SIRET']}")
+                    with col_statut_adresse:
+                        if gouv.get('etat_admin') == 'F' or gouv.get('date_fermeture'):
+                            st.error("🔴 Entreprise fermée")
+                        else:
+                            st.success("🟢 Entreprise en activité")
+                        st.write(f"📍 {gouv.get('adresse_complete', 'Inconnue')}")
+                    with col_agences:
+                        st.warning("⚠️ Aucune certification RGE trouvée pour ce SIRET à l'ADEME.")
                     
-                # NOUVEAU BLOC : Prise en charge de l'erreur de NIC
-                elif gouv.get("erreur_siret"):
+                # Prise en charge de l'erreur de NIC
+                elif erreur_siret:
                     st.error(f"❌ **Erreur de saisie** : Le SIRET **{res['SIRET']}** n'existe pas.")
                     st.warning(f"💡 Le SIREN correspond bien à l'entreprise **{gouv.get('nom')}**, mais la fin du numéro (le NIC) est incorrecte.")
                     
@@ -274,16 +273,14 @@ if 'audit_results' in st.session_state:
                                     
                                 st.markdown(f"- **{a.get('siret')}** ({a.get('libelle_commune', 'Inconnu')}) : {s_badge} *({texte_date})*")
                 
-                # ...
                 else:
                     st.error(f"❌ SIRET {res['SIRET']} totalement introuvable (ni RGE, ni dans la base du Gouvernement).")
                 
                 continue # On passe au SIRET suivant
 
-
             # ---> CAS 2 : ENTREPRISE RGE
             graph_data = []
-            for d, info in res['Domaines'].items():
+            for d, info in res.get('Domaines', {}).items():
                 c_code = "#28a745" if info['status_rge'] else "#dc3545"
                 for h in info['historique']:
                     is_valide = h['lien_debut_regle'] <= date_eng <= h['fin'] if 'lien_debut_regle' in h else h['debut'] <= date_eng <= h['fin']
@@ -294,124 +291,127 @@ if 'audit_results' in st.session_state:
                         "Statut": "Valide" if is_valide else "Expiré"
                     })
 
-            liste_doms, nb_key = list(res['Domaines'].keys()), f"nb_{res['SIRET']}"
+            liste_doms = list(res.get('Domaines', {}).keys())
+            nb_key = f"nb_{res['SIRET']}"
             if nb_key not in st.session_state: st.session_state[nb_key] = 1
 
             for i in range(st.session_state[nb_key]):
                 c1, c2, c3, c4, c5, c6, c7 = st.columns([1.5, 0.8, 1.2, 0.8, 1.2, 1.0, 0.5])
-                with c1: dom_sel = st.selectbox(f"D{i}", options=liste_doms, key=f"s_{res['SIRET']}_{i}", label_visibility="collapsed")
                 
-                info = res['Domaines'][dom_sel]
-                
-                with c2: 
-                    if info['status_rge']: st.success("✅ Valide")
-                    else: st.error("❌ Expiré")
-                
-                debut_affiche = info['debut']
-                fin_affiche = info['fin']
-
-                if info['status_rge']:
-                    from datetime import timedelta
-                    hist_trie = sorted(info['historique'], key=lambda x: x['lien_debut_regle'])
-                    blocs = []
-                    bloc_actuel = [hist_trie[0]['lien_debut_regle'], hist_trie[0]['fin']]
-
-                    for h in hist_trie[1:]:
-                        if h['lien_debut_regle'] <= bloc_actuel[1] + timedelta(days=31):
-                            bloc_actuel[1] = max(bloc_actuel[1], h['fin'])
-                        else:
-                            blocs.append(bloc_actuel)
-                            bloc_actuel = [h['lien_debut_regle'], h['fin']]
-                    blocs.append(bloc_actuel)
-
-                    for b in blocs:
-                        if b[0] <= date_eng <= b[1]:
-                            debut_affiche = b[0]
-                            fin_affiche = b[1]
-                            break
-
-                with c3:
-                    st.markdown(f"<div class='certif-info'><b>N° Certificat :</b> {info['n_certif']}<br><i>Début : {debut_affiche.strftime('%d/%m/%Y')}</i><br><i>Fin : {fin_affiche.strftime('%d/%m/%Y')}</i></div>", unsafe_allow_html=True)
-                
-                with c4: choix_bar = st.selectbox("F", options=get_cee_options(dom_sel), key=f"b_{res['SIRET']}_{dom_sel}_{i}", label_visibility="collapsed")
-                
-                with c5:
-                    if info['url']:
-                        st.link_button("👁️ Voir certificat", info['url'])
-                        try:
-                            # ---> MODIFICATION ICI : Appel à la fonction en cache plutôt qu'à requests.get()
-                            content = get_pdf_content(info['url'])
-                            
-                            if content:
-                                ent_clean = res['Entreprise'].replace(" ", "_").replace("/", "-")
-                                ok_ko = "OK" if info['status_rge'] else "KO"
-                                nom_indiv = f"{choix_bar}-RGE-{ok_ko} ({ent_clean}).pdf"
-    
-                                statut_txt = "VALIDE" if info['status_rge'] else "EXPIRE"
-                                nom_zip = f"{dom_sel}-{ent_clean}-{statut_txt}.pdf"
-                                st.download_button("📥 Télécharger", content, nom_indiv, "application/pdf", key=f"dl_{res['SIRET']}_{i}")
-                                files_to_zip.append({"content": content, "nom": nom_zip})
-                        except: st.caption("⚠️ Erreur téléchargement")
-                
-                with c6: 
-                    show_g = st.checkbox("📊 Graph", key=f"check_g_{res['SIRET']}_{i}")
-                    show_a = False
-                    autres = gouv.get('autres_agences', [])
-                    if i == 0 and autres:
-                        show_a = st.checkbox(f"📍Agences ({len(autres)})", key=f"check_a_{res['SIRET']}")
-                
-                with c7:
-                    if i == st.session_state[nb_key] - 1:
-                        st.markdown('<div class="add-btn">', unsafe_allow_html=True)
-                        if st.button("➕", key=f"add_{res['SIRET']}"):
-                            st.session_state[nb_key] += 1
-                            st.rerun()
-                        st.markdown('</div>', unsafe_allow_html=True)
-                    elif st.session_state[nb_key] > 1:
-                        if st.button("🗑️", key=f"del_{res['SIRET']}_{i}"):
-                            st.session_state[nb_key] -= 1
-                            st.rerun()
-
-                if show_g and graph_data:
-                    df_g = pd.DataFrame(graph_data)
-                    df_g["Début"], df_g["Fin"] = pd.to_datetime(df_g["Début"]), pd.to_datetime(df_g["Fin"])
-                    fig = px.timeline(df_g, x_start="Début", x_end="Fin", y="Domaine", color="Statut", color_discrete_map={"Valide": "#28a745", "Expiré": "#dee2e6"})
-                    fig.add_vline(x=pd.to_datetime(date_eng).timestamp() * 1000, line_dash="dash", line_color="blue")
-                    fig.update_layout(barcornerradius=10, height=max(180, (len(df_g["Domaine"].unique()) * 30) + 80), margin=dict(l=0, r=0, t=30, b=60),
-                                      yaxis={'title': None, 'tickfont': {'size': 10}}, xaxis={'visible': True, 'tickfont': {'size': 9}},
-                                      legend=dict(orientation="h", yanchor="bottom", y=-0.4, xanchor="center", x=0.5))
-                    st.plotly_chart(fig, width="stretch", key=f"fig_global_{res['SIRET']}_{i}")
-
-                if i == 0 and show_a:
-                    st.markdown("---")
-                    st.markdown(f"**📍 Liste des autres agences liées à cette entreprise ({len(autres)} au total) :**")
+                # S'assurer qu'il y a bien des domaines pour éviter une erreur
+                if liste_doms:
+                    with c1: dom_sel = st.selectbox(f"D{i}", options=liste_doms, key=f"s_{res['SIRET']}_{i}", label_visibility="collapsed")
                     
-                    for a in autres: 
-                        etat_a = a.get('etat_administratif')
-                        s_badge = "🔴 Fermée" if etat_a == 'F' else "🟢 Active"
-                        
-                        d_ouv_raw = a.get('date_creation')
-                        d_ferm_raw = a.get('date_fermeture')
-                        d_ouv = datetime.strptime(d_ouv_raw, '%Y-%m-%d').strftime('%d/%m/%Y') if d_ouv_raw else "?"
-                        
-                        if etat_a == 'F' or d_ferm_raw:
-                            d_ferm_a = datetime.strptime(d_ferm_raw, '%Y-%m-%d').strftime('%d/%m/%Y') if d_ferm_raw else "?"
-                            texte_date = f"du {d_ouv} au {d_ferm_a}"
-                        else:
-                            texte_date = f"depuis le {d_ouv}"
-                            
-                        st.markdown(f"- **{a.get('siret')}** ({a.get('libelle_commune', 'Inconnu')}) : {s_badge} *({texte_date})*")
+                    info = res['Domaines'][dom_sel]
+                    
+                    with c2: 
+                        if info['status_rge']: st.success("✅ Valide")
+                        else: st.error("❌ Expiré")
+                    
+                    debut_affiche = info['debut']
+                    fin_affiche = info['fin']
 
-                excel_data.append({
-                    "SIRET": res['SIRET'], 
-                    "Entreprise": res['Entreprise'], 
-                    "Domaine": dom_sel, 
-                    "Fiche": choix_bar, 
-                    "Certificat": info['n_certif'], 
-                    "Date de début": info['debut'].strftime('%d/%m/%Y'),
-                    "Date de fin": info['fin'].strftime('%d/%m/%Y'),
-                    "RGE": "Valide" if info['status_rge'] else "Expiré"
-                })
+                    if info['status_rge']:
+                        from datetime import timedelta
+                        hist_trie = sorted(info['historique'], key=lambda x: x['lien_debut_regle'])
+                        blocs = []
+                        bloc_actuel = [hist_trie[0]['lien_debut_regle'], hist_trie[0]['fin']]
+
+                        for h in hist_trie[1:]:
+                            if h['lien_debut_regle'] <= bloc_actuel[1] + timedelta(days=31):
+                                bloc_actuel[1] = max(bloc_actuel[1], h['fin'])
+                            else:
+                                blocs.append(bloc_actuel)
+                                bloc_actuel = [h['lien_debut_regle'], h['fin']]
+                        blocs.append(bloc_actuel)
+
+                        for b in blocs:
+                            if b[0] <= date_eng <= b[1]:
+                                debut_affiche = b[0]
+                                fin_affiche = b[1]
+                                break
+
+                    with c3:
+                        st.markdown(f"<div class='certif-info'><b>N° Certificat :</b> {info['n_certif']}<br><i>Début : {debut_affiche.strftime('%d/%m/%Y')}</i><br><i>Fin : {fin_affiche.strftime('%d/%m/%Y')}</i></div>", unsafe_allow_html=True)
+                    
+                    with c4: choix_bar = st.selectbox("F", options=get_cee_options(dom_sel), key=f"b_{res['SIRET']}_{dom_sel}_{i}", label_visibility="collapsed")
+                    
+                    with c5:
+                        if info['url']:
+                            st.link_button("👁️ Voir certificat", info['url'])
+                            try:
+                                content = get_pdf_content(info['url'])
+                                
+                                if content:
+                                    ent_clean = res['Entreprise'].replace(" ", "_").replace("/", "-")
+                                    ok_ko = "OK" if info['status_rge'] else "KO"
+                                    nom_indiv = f"{choix_bar}-RGE-{ok_ko} ({ent_clean}).pdf"
+        
+                                    statut_txt = "VALIDE" if info['status_rge'] else "EXPIRE"
+                                    nom_zip = f"{dom_sel}-{ent_clean}-{statut_txt}.pdf"
+                                    st.download_button("📥 Télécharger", content, nom_indiv, "application/pdf", key=f"dl_{res['SIRET']}_{i}")
+                                    files_to_zip.append({"content": content, "nom": nom_zip})
+                            except: st.caption("⚠️ Erreur téléchargement")
+                    
+                    with c6: 
+                        show_g = st.checkbox("📊 Graph", key=f"check_g_{res['SIRET']}_{i}")
+                        show_a = False
+                        autres = gouv.get('autres_agences', [])
+                        if i == 0 and autres:
+                            show_a = st.checkbox(f"📍Agences ({len(autres)})", key=f"check_a_{res['SIRET']}")
+                    
+                    with c7:
+                        if i == st.session_state[nb_key] - 1:
+                            st.markdown('<div class="add-btn">', unsafe_allow_html=True)
+                            if st.button("➕", key=f"add_{res['SIRET']}"):
+                                st.session_state[nb_key] += 1
+                                st.rerun()
+                            st.markdown('</div>', unsafe_allow_html=True)
+                        elif st.session_state[nb_key] > 1:
+                            if st.button("🗑️", key=f"del_{res['SIRET']}_{i}"):
+                                st.session_state[nb_key] -= 1
+                                st.rerun()
+
+                    if show_g and graph_data:
+                        df_g = pd.DataFrame(graph_data)
+                        df_g["Début"], df_g["Fin"] = pd.to_datetime(df_g["Début"]), pd.to_datetime(df_g["Fin"])
+                        fig = px.timeline(df_g, x_start="Début", x_end="Fin", y="Domaine", color="Statut", color_discrete_map={"Valide": "#28a745", "Expiré": "#dee2e6"})
+                        fig.add_vline(x=pd.to_datetime(date_eng).timestamp() * 1000, line_dash="dash", line_color="blue")
+                        fig.update_layout(barcornerradius=10, height=max(180, (len(df_g["Domaine"].unique()) * 30) + 80), margin=dict(l=0, r=0, t=30, b=60),
+                                          yaxis={'title': None, 'tickfont': {'size': 10}}, xaxis={'visible': True, 'tickfont': {'size': 9}},
+                                          legend=dict(orientation="h", yanchor="bottom", y=-0.4, xanchor="center", x=0.5))
+                        st.plotly_chart(fig, width="stretch", key=f"fig_global_{res['SIRET']}_{i}")
+
+                    if i == 0 and show_a:
+                        st.markdown("---")
+                        st.markdown(f"**📍 Liste des autres agences liées à cette entreprise ({len(autres)} au total) :**")
+                        
+                        for a in autres: 
+                            etat_a = a.get('etat_administratif')
+                            s_badge = "🔴 Fermée" if etat_a == 'F' else "🟢 Active"
+                            
+                            d_ouv_raw = a.get('date_creation')
+                            d_ferm_raw = a.get('date_fermeture')
+                            d_ouv = datetime.strptime(d_ouv_raw, '%Y-%m-%d').strftime('%d/%m/%Y') if d_ouv_raw else "?"
+                            
+                            if etat_a == 'F' or d_ferm_raw:
+                                d_ferm_a = datetime.strptime(d_ferm_raw, '%Y-%m-%d').strftime('%d/%m/%Y') if d_ferm_raw else "?"
+                                texte_date = f"du {d_ouv} au {d_ferm_a}"
+                            else:
+                                texte_date = f"depuis le {d_ouv}"
+                                
+                            st.markdown(f"- **{a.get('siret')}** ({a.get('libelle_commune', 'Inconnu')}) : {s_badge} *({texte_date})*")
+
+                    excel_data.append({
+                        "SIRET": res['SIRET'], 
+                        "Entreprise": res['Entreprise'], 
+                        "Domaine": dom_sel, 
+                        "Fiche": choix_bar, 
+                        "Certificat": info['n_certif'], 
+                        "Date de début": info['debut'].strftime('%d/%m/%Y'),
+                        "Date de fin": info['fin'].strftime('%d/%m/%Y'),
+                        "RGE": "Valide" if info['status_rge'] else "Expiré"
+                    })
 
     if excel_data:
         st.divider()
