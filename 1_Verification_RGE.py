@@ -7,6 +7,7 @@ import zipfile
 import plotly.express as px
 import streamlit.components.v1 as components
 import os
+from streamlit_paste_button import paste_image_button
 
 # --- IMPORT DU NOUVEAU CERVEAU ---
 from core.rge_api import get_cee_options, fetch_ademe_data, extract_qualif_code, clean_url, fetch_gouv_data
@@ -73,16 +74,52 @@ with c_date:
     st.session_state.date_eng_val = date_eng
 
 with c_upload:
-    docs = st.file_uploader(
-        "📂 Extraction de données (SIRET, Date d'engagement)", 
-        type=["pdf", "xlsx", "xls", "zip"], 
-        accept_multiple_files=True,
-        help="Attention : Utilisation d'IA, ne pas importer de documents avec des éléments à caractère confidentiel."
-    )
-    if docs:
+    # 1. Titre global placé au-dessus pour libérer de l'espace horizontal
+    st.markdown("**📂 Extraction de données (SIRET, Date d'engagement)**")
+    
+    # 2. Création de deux colonnes alignées verticalement au centre
+    col_file, col_paste = st.columns([3, 1], vertical_alignment="center")
+    
+    with col_file:
+        # Le label_visibility="collapsed" permet de coller le composant en haut de sa colonne
+        docs = st.file_uploader(
+            "Extraction de données", 
+            type=["pdf", "xlsx", "xls", "zip", "png", "jpg", "jpeg"],
+            accept_multiple_files=True,
+            label_visibility="collapsed",
+            help="Attention : Utilisation d'IA, ne pas importer de documents avec des éléments à caractère confidentiel."
+        )
+        
+    with col_paste:
+        # Le bouton vient se placer directement à droite du bloc d'importation
+        paste_result = paste_image_button("📋 Coller une capture")
+        
+    # Liste globale des documents à envoyer à l'analyse
+    docs_a_analyser = list(docs) if docs else []
+    
+    # 3. Message de confirmation ultra-compact à la place de l'affichage de l'image
+    if paste_result.image_data is not None:
+        st.caption("✨ *Image détectée dans le presse-papiers et prête pour l'analyse*")
+        
+        # Préparation du flux pour l'API Gemini
+        img_buffer = io.BytesIO()
+        paste_result.image_data.save(img_buffer, format="PNG")
+        img_buffer.name = "image_collee.png" 
+        
+        docs_a_analyser.append(img_buffer)
+
+    # 4. Lancement de l'analyse si au moins un élément est présent
+    if len(docs_a_analyser) > 0:
         if st.button("🧠 Extraire SIRET & Date", type="secondary", width="stretch"):
             with st.spinner("Analyse des documents en cours..."):
-                extracted_sirets, extracted_date_or_time = analyze_documents(docs)
+                extracted_sirets, extracted_date_or_time = analyze_documents(docs_a_analyser)
+                
+                # ... (votre suite de traitement des résultats reste identique) ---
+                
+                # --- GESTION DES RÉSULTATS IA (votre code d'origine reste ici) ---
+                if "QUOTA_EXCEEDED" in extracted_sirets:
+                    temps_attente = extracted_date_or_time
+                    st.warning(f"⏳ Limite de requêtes IA atteinte. Veuillez patienter {temps_attente} secondes avant de réessayer.")
                 
                 # --- GESTION DES RÉSULTATS IA ---
                 if "QUOTA_EXCEEDED" in extracted_sirets:
