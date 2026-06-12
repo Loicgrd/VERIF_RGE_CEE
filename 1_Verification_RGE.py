@@ -349,21 +349,22 @@ if 'audit_results' in st.session_state:
                     fin_affiche = info['fin']
 
                     # 1. On calcule les blocs globaux dans TOUS les cas (Valide comme Expiré)
+                    from datetime import timedelta
                     hist_trie = sorted(info['historique'], key=lambda x: x['lien_debut_regle'])
                     blocs = []
                     bloc_actuel = [hist_trie[0]['lien_debut_regle'], hist_trie[0]['fin']]
 
                     for h in hist_trie[1:]:
-                        if h['lien_debut_regle'] <= bloc_actuel[1] + timedelta(days=1):
+                        if h['lien_debut_regle'] <= bloc_actuel[1] + timedelta(days=31):
                             bloc_actuel[1] = max(bloc_actuel[1], h['fin'])
                         else:
                             blocs.append(bloc_actuel)
                             bloc_actuel = [h['lien_debut_regle'], h['fin']]
                     blocs.append(bloc_actuel)
 
-                    # Vérification locale en temps réel par rapport à la date du calendrier
                     est_valide_localement = False
                     
+                    # 1. On cherche d'abord si la date d'engagement tombe dans un de nos blocs
                     for b in blocs:
                         if b[0] <= date_eng <= b[1]:
                             debut_affiche = b[0]
@@ -371,6 +372,7 @@ if 'audit_results' in st.session_state:
                             est_valide_localement = True
                             break
                             
+                    # 2. Si elle ne tombe dans aucun bloc (c'est un trou), on prend le bloc le plus proche
                     if not est_valide_localement:
                         bloc_le_plus_proche = min(
                             blocs, 
@@ -378,16 +380,6 @@ if 'audit_results' in st.session_state:
                         )
                         debut_affiche = bloc_le_plus_proche[0]
                         fin_affiche = bloc_le_plus_proche[1]
-
-                    # =================================================================
-                    # 2. AFFICHAGE DYNAMIQUE DU STATUT (Exemple selon votre structure)
-                    # =================================================================
-                    # Regardez dans vos colonnes (c2 ou c3), remplacez info['status_rge'] par est_valide_localement
-                    with c2:
-                        if est_valide_localement:
-                            st.markdown("<div style='color:green; font-weight:bold;'>🟢 RGE VALIDE</div>", unsafe_allow_html=True)
-                        else:
-                            st.markdown("<div style='color:red; font-weight:bold;'>🔴 RGE EXPIRÉ</div>", unsafe_allow_html=True)
 
                     with c3:
                         st.markdown(f"<div class='certif-info'><b>N° Certificat :</b> {info['n_certif']}<br><i>Début : {debut_affiche.strftime('%d/%m/%Y')}</i><br><i>Fin : {fin_affiche.strftime('%d/%m/%Y')}</i></div>", unsafe_allow_html=True)
