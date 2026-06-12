@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 import requests
 import io
 import zipfile
@@ -348,29 +348,52 @@ if 'audit_results' in st.session_state:
                     debut_affiche = info['debut']
                     fin_affiche = info['fin']
 
-                    if info['status_rge']:
-                        from datetime import timedelta
-                        hist_trie = sorted(info['historique'], key=lambda x: x['lien_debut_regle'])
-                        blocs = []
-                        bloc_actuel = [hist_trie[0]['lien_debut_regle'], hist_trie[0]['fin']]
+                    # 1. On calcule les blocs globaux dans TOUS les cas (Valide comme Expiré)
+                    hist_trie = sorted(info['historique'], key=lambda x: x['lien_debut_regle'])
+                    blocs = []
+                    bloc_actuel = [hist_trie[0]['lien_debut_regle'], hist_trie[0]['fin']]
 
-                        for h in hist_trie[1:]:
-                            if h['lien_debut_regle'] <= bloc_actuel[1] + timedelta(days=31):
-                                bloc_actuel[1] = max(bloc_actuel[1], h['fin'])
-                            else:
-                                blocs.append(bloc_actuel)
-                                bloc_actuel = [h['lien_debut_regle'], h['fin']]
-                        blocs.append(bloc_actuel)
+                    for h in hist_trie[1:]:
+                        if h['lien_debut_regle'] <= bloc_actuel[1] + timedelta(days=1):
+                            bloc_actuel[1] = max(bloc_actuel[1], h['fin'])
+                        else:
+                            blocs.append(bloc_actuel)
+                            bloc_actuel = [h['lien_debut_regle'], h['fin']]
+                    blocs.append(bloc_actuel)
 
-                        for b in blocs:
-                            if b[0] <= date_eng <= b[1]:
-                                debut_affiche = b[0]
-                                fin_affiche = b[1]
-                                break
+                    # Vérification locale en temps réel par rapport à la date du calendrier
+                    est_valide_localement = False
+                    
+                    for b in blocs:
+                        if b[0] <= date_eng <= b[1]:
+                            debut_affiche = b[0]
+                            fin_affiche = b[1]
+                            est_valide_localement = True
+                            break
+                            
+                    if not est_valide_localement:
+                        bloc_le_plus_proche = min(
+                            blocs, 
+                            key=lambda b: min(abs(date_eng - b[0]), abs(date_eng - b[1]))
+                        )
+                        debut_affiche = bloc_le_plus_proche[0]
+                        fin_affiche = bloc_le_plus_proche[1]
+
+                    # =================================================================
+                    # 2. AFFICHAGE DYNAMIQUE DU STATUT (Exemple selon votre structure)
+                    # =================================================================
+                    # Regardez dans vos colonnes (c2 ou c3), remplacez info['status_rge'] par est_valide_localement
+                    with c2:
+                        if est_valide_localement:
+                            st.markdown("<div style='color:green; font-weight:bold;'>🟢 RGE VALIDE</div>", unsafe_allow_html=True)
+                        else:
+                            st.markdown("<div style='color:red; font-weight:bold;'>🔴 RGE EXPIRÉ</div>", unsafe_allow_html=True)
 
                     with c3:
                         st.markdown(f"<div class='certif-info'><b>N° Certificat :</b> {info['n_certif']}<br><i>Début : {debut_affiche.strftime('%d/%m/%Y')}</i><br><i>Fin : {fin_affiche.strftime('%d/%m/%Y')}</i></div>", unsafe_allow_html=True)
                     
+                    
+
                     with c4: choix_bar = st.selectbox("F", options=get_cee_options(dom_sel), key=f"b_{res['SIRET']}_{dom_sel}_{i}", label_visibility="collapsed")
                     
                     with c5:
@@ -408,6 +431,18 @@ if 'audit_results' in st.session_state:
                             if st.button("🗑️", key=f"del_{res['SIRET']}_{i}"):
                                 st.session_state[nb_key] -= 1
                                 st.rerun()
+
+
+                    excel_data.append({
+                        "SIRET": res['SIRET'], 
+                        "Entreprise": res['Entreprise'], 
+                        "Domaine": dom_sel, 
+                        "Fiche": choix_bar, 
+                        "Certificat": info['n_certif'], 
+                        "Date de début": debut_affiche,  # Date du bloc calculé
+                        "Date de fin": fin_affiche,      # Date du bloc calculé
+                        "RGE": "Valide" if info['status_rge'] else "Expiré"
+                    })
 
                     if show_g and graph_data:
                         df_g = pd.DataFrame(graph_data)
@@ -480,6 +515,7 @@ if 'audit_results' in st.session_state:
                 worksheet = workbook.add_worksheet('Données')
                 writer.sheets['Données'] = worksheet
                 date_format = workbook.add_format({'num_format': 'dd/mm/yyyy'})
+                worksheet.set_column('F:G', 15) #Permet d'agrandir les colonnes dates
                 worksheet.write('A1', 'Date d\'engagement :')
                 worksheet.write('B1', date_obj, date_format) 
                 pd.DataFrame(excel_data).to_excel(writer, sheet_name='Données', startrow=1, index=False)
