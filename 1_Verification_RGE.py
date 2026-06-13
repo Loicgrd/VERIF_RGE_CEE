@@ -114,13 +114,6 @@ with c_upload:
             with st.spinner("Analyse des documents en cours..."):
                 extracted_sirets, extracted_date_or_time = analyze_documents(docs_a_analyser)
                 
-                # ... (votre suite de traitement des résultats reste identique) ---
-                
-                # --- GESTION DES RÉSULTATS IA (votre code d'origine reste ici) ---
-                if "QUOTA_EXCEEDED" in extracted_sirets:
-                    temps_attente = extracted_date_or_time
-                    st.warning(f"⏳ Limite de requêtes IA atteinte. Veuillez patienter {temps_attente} secondes avant de réessayer.")
-                
                 # --- GESTION DES RÉSULTATS IA ---
                 if "QUOTA_EXCEEDED" in extracted_sirets:
                     temps_attente = extracted_date_or_time
@@ -154,6 +147,8 @@ df_saisie = st.data_editor(
 )
 
 if st.button("🔍 Analyser les SIRET", type="primary"):
+    # ✅ CORRECTION : On lit directement df_saisie (valeur du widget au moment du clic),
+    # sans passer par session_state qui peut être en retard d'un rerun.
     sirets = [str(s).strip() for s in df_saisie["SIRET"] if s and str(s).strip()]
     if not sirets:
         st.warning("Veuillez saisir au moins un SIRET.")
@@ -341,30 +336,27 @@ if 'audit_results' in st.session_state:
                     
                     info = res['Domaines'][dom_sel]
                     
-                    with c2: 
-                        if info['status_rge']: st.success("✅ Valide")
-                        else: st.error("❌ Expiré")
+                    
                     
                     debut_affiche = info['debut']
                     fin_affiche = info['fin']
 
                     # 1. On calcule les blocs globaux dans TOUS les cas (Valide comme Expiré)
-                    from datetime import timedelta
                     hist_trie = sorted(info['historique'], key=lambda x: x['lien_debut_regle'])
                     blocs = []
                     bloc_actuel = [hist_trie[0]['lien_debut_regle'], hist_trie[0]['fin']]
 
                     for h in hist_trie[1:]:
-                        if h['lien_debut_regle'] <= bloc_actuel[1] + timedelta(days=31):
+                        if h['lien_debut_regle'] <= bloc_actuel[1] + timedelta(days=1):
                             bloc_actuel[1] = max(bloc_actuel[1], h['fin'])
                         else:
                             blocs.append(bloc_actuel)
                             bloc_actuel = [h['lien_debut_regle'], h['fin']]
                     blocs.append(bloc_actuel)
 
+                    # Vérification locale en temps réel par rapport à la date du calendrier
                     est_valide_localement = False
                     
-                    # 1. On cherche d'abord si la date d'engagement tombe dans un de nos blocs
                     for b in blocs:
                         if b[0] <= date_eng <= b[1]:
                             debut_affiche = b[0]
@@ -372,7 +364,6 @@ if 'audit_results' in st.session_state:
                             est_valide_localement = True
                             break
                             
-                    # 2. Si elle ne tombe dans aucun bloc (c'est un trou), on prend le bloc le plus proche
                     if not est_valide_localement:
                         bloc_le_plus_proche = min(
                             blocs, 
@@ -381,10 +372,15 @@ if 'audit_results' in st.session_state:
                         debut_affiche = bloc_le_plus_proche[0]
                         fin_affiche = bloc_le_plus_proche[1]
 
+                    # Affichage dynamique du statut
+                    with c2:
+                        if est_valide_localement:
+                            st.success("✅ Valide")
+                        else:
+                            st.error("❌ Expiré")
+
                     with c3:
                         st.markdown(f"<div class='certif-info'><b>N° Certificat :</b> {info['n_certif']}<br><i>Début : {debut_affiche.strftime('%d/%m/%Y')}</i><br><i>Fin : {fin_affiche.strftime('%d/%m/%Y')}</i></div>", unsafe_allow_html=True)
-                    
-                    
 
                     with c4: choix_bar = st.selectbox("F", options=get_cee_options(dom_sel), key=f"b_{res['SIRET']}_{dom_sel}_{i}", label_visibility="collapsed")
                     
@@ -424,18 +420,6 @@ if 'audit_results' in st.session_state:
                                 st.session_state[nb_key] -= 1
                                 st.rerun()
 
-
-                    excel_data.append({
-                        "SIRET": res['SIRET'], 
-                        "Entreprise": res['Entreprise'], 
-                        "Domaine": dom_sel, 
-                        "Fiche": choix_bar, 
-                        "Certificat": info['n_certif'], 
-                        "Date de début": debut_affiche,  # Date du bloc calculé
-                        "Date de fin": fin_affiche,      # Date du bloc calculé
-                        "RGE": "Valide" if info['status_rge'] else "Expiré"
-                    })
-
                     if show_g and graph_data:
                         df_g = pd.DataFrame(graph_data)
                         df_g["Début"], df_g["Fin"] = pd.to_datetime(df_g["Début"]), pd.to_datetime(df_g["Fin"])
@@ -466,15 +450,16 @@ if 'audit_results' in st.session_state:
                                 
                             st.markdown(f"- **{a.get('siret')}** ({a.get('libelle_commune', 'Inconnu')}) : {s_badge} *({texte_date})*")
 
+                    # ✅ CORRECTION 2 : Un seul excel_data.append() par ligne (le doublon a été supprimé)
                     excel_data.append({
                         "SIRET": res['SIRET'], 
                         "Entreprise": res['Entreprise'], 
                         "Domaine": dom_sel, 
                         "Fiche": choix_bar, 
                         "Certificat": info['n_certif'], 
-                        "Date de début": info['debut'].strftime('%d/%m/%Y'),
-                        "Date de fin": info['fin'].strftime('%d/%m/%Y'),
-                        "RGE": "Valide" if info['status_rge'] else "Expiré"
+                        "Date de début": debut_affiche,
+                        "Date de fin": fin_affiche,
+                        "RGE": "Valide" if est_valide_localement else "Expiré"
                     })
 
     if excel_data:
@@ -507,7 +492,7 @@ if 'audit_results' in st.session_state:
                 worksheet = workbook.add_worksheet('Données')
                 writer.sheets['Données'] = worksheet
                 date_format = workbook.add_format({'num_format': 'dd/mm/yyyy'})
-                worksheet.set_column('F:G', 15) #Permet d'agrandir les colonnes dates
+                worksheet.set_column('F:G', 15) # Permet d'agrandir les colonnes dates
                 worksheet.write('A1', 'Date d\'engagement :')
                 worksheet.write('B1', date_obj, date_format) 
                 pd.DataFrame(excel_data).to_excel(writer, sheet_name='Données', startrow=1, index=False)
