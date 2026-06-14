@@ -374,10 +374,8 @@ if 'audit_results' in st.session_state:
 
                     # Affichage dynamique du statut
                     with c2:
-                        if est_valide_localement:
-                            st.success("✅ Valide")
-                        else:
-                            st.error("❌ Expiré")
+                        if info['status_rge']: st.success("✅ Valide")
+                        else: st.error("❌ Expiré")
 
                     with c3:
                         st.markdown(f"<div class='certif-info'><b>N° Certificat :</b> {info['n_certif']}<br><i>Début : {debut_affiche.strftime('%d/%m/%Y')}</i><br><i>Fin : {fin_affiche.strftime('%d/%m/%Y')}</i></div>", unsafe_allow_html=True)
