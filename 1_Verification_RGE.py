@@ -180,30 +180,61 @@ if st.button("🔍 Analyser les SIRET", type="primary"):
                                 d_lien_fin = datetime.strptime(lien_fin[:10], '%Y-%m-%d').date()
                                 d_tech_debut = datetime.strptime(tech_debut[:10], '%Y-%m-%d').date()
                                 
-                                if dom not in domaines_raw: 
+                                # --- NOUVEAU : On récupère la date de fin technique de la ligne ---
+                                tech_fin_str = line.get('date_fin')
+                                d_tech_fin = datetime.strptime(tech_fin_str[:10], '%Y-%m-%d').date() if tech_fin_str else d_lien_fin
+
+
+                                if dom not in domaines_raw:
                                     domaines_raw[dom] = []
-                                    
                                 domaines_raw[dom].append({
-                                    "n_certif": extract_qualif_code(line.get('_id', "N/A")), 
+                                    "n_certif": extract_qualif_code(line.get('_id', "N/A")),
                                     "debut": d_lien_debut,
                                     "fin": d_lien_fin,
                                     "lien_debut_regle": d_lien_debut,
                                     "tech_debut_score": d_tech_debut,
+                                    "tech_fin_score": d_tech_fin, # Ajouté ici
                                     "url": clean_url(line.get('url_qualification') or line.get('lien_certificat'))
                                 })
-                            except: 
+                            except:
                                 continue
                                 
-                    domaines_finaux = {}
-                    for dom, periodes in domaines_raw.items():
-                        lignes_valides = [p for p in periodes if p['lien_debut_regle'] <= date_eng <= p['fin']]
-                        if lignes_valides:
-                            meilleure_ligne = min(lignes_valides, key=lambda x: abs((x['tech_debut_score'] - date_eng).days))
-                            domaines_finaux[dom] = {**meilleure_ligne, "status_rge": True, "historique": periodes}
-                        else:
-                            plus_recente = max(periodes, key=lambda x: x['fin'])
-                            domaines_finaux[dom] = {**plus_recente, "status_rge": False, "historique": periodes}
+                        domaines_finaux = {}
+                        for dom, periodes in domaines_raw.items():
+                        
+                            # 1. On cherche en priorité les lignes où l'engagement est stricto sensu dans la période de qualification technique
+                            lignes_strictes = [p for p in periodes if p.get('tech_fin_score') and p['tech_debut_score'] <= date_eng <= p['tech_fin_score']]
                             
+                            if lignes_strictes:
+                                meilleure_ligne = min(lignes_strictes, key=lambda x: (date_eng - x['tech_debut_score']).days)
+                                status = True
+                                
+                            else:
+                                # 2. Fallback : on regarde la validité globale du lien PDF
+                                lignes_valides = [p for p in periodes if p['lien_debut_regle'] <= date_eng <= p['fin']]
+                                
+                                if lignes_valides:
+                                    # On privilégie les lignes passées
+                                    lignes_passees = [p for p in lignes_valides if p['tech_debut_score'] <= date_eng]
+                                    if lignes_passees:
+                                        meilleure_ligne = min(lignes_passees, key=lambda x: (date_eng - x['tech_debut_score']).days)
+                                    else:
+                                        # Sécurité ultime
+                                        meilleure_ligne = min(lignes_valides, key=lambda x: abs((x['tech_debut_score'] - date_eng).days))
+                                    status = True
+                                    
+                                else:
+                                    # 3. Aucun certificat valide à cette date : l'entreprise est expirée pour ce domaine
+                                    meilleure_ligne = max(periodes, key=lambda x: x['fin'])
+                                    status = False
+                                    
+                            # ---> C'EST ICI LA CORRECTION : On réinjecte bien tes clés status_rge et historique
+                            domaines_finaux[dom] = {
+                                **meilleure_ligne, 
+                                "status_rge": status, 
+                                "historique": periodes
+                            }
+
                     all_results.append({
                         "SIRET": s, 
                         "Entreprise": nom_ent, 
