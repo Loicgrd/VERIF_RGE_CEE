@@ -194,7 +194,8 @@ if st.button("🔍 Analyser les SIRET", type="primary"):
                                     "lien_debut_regle": d_lien_debut,
                                     "tech_debut_score": d_tech_debut,
                                     "tech_fin_score": d_tech_fin, # Ajouté ici
-                                    "url": clean_url(line.get('url_qualification') or line.get('lien_certificat'))
+                                    "url": clean_url(line.get('url_qualification') or line.get('lien_certificat')),
+                                    "organisme": str(line.get('organisme', '')).lower().strip() 
                                 })
                             except:
                                 continue
@@ -228,10 +229,44 @@ if st.button("🔍 Analyser les SIRET", type="primary"):
                                     meilleure_ligne = max(periodes, key=lambda x: x['fin'])
                                     status = False
                                     
+
+                            
+
+                            # QUALIBAT : surcharge de l'URL avec le certificat le plus récent
+                            organisme = periodes[0].get('organisme', '') if periodes else ''
+                            if organisme == 'qualibat' and status:
+                                # On réutilise la même logique de fusion que pour l'affichage
+                                hist_trie = sorted(periodes, key=lambda x: x['lien_debut_regle'])
+                                blocs_qualibat = []
+                                bloc_actuel = {
+                                    "debut": hist_trie[0]['lien_debut_regle'],
+                                    "fin": hist_trie[0].get('tech_fin_score', hist_trie[0]['fin']),
+                                    "periodes": [hist_trie[0]]
+                                }
+                                for p in hist_trie[1:]:
+                                    if p['lien_debut_regle'] <= bloc_actuel['fin'] + timedelta(days=0):
+                                        bloc_actuel['fin'] = max(bloc_actuel['fin'], p.get('tech_fin_score', p['fin']))
+                                        bloc_actuel['periodes'].append(p)
+                                    else:
+                                        blocs_qualibat.append(bloc_actuel)
+                                        bloc_actuel = {
+                                            "debut": p['lien_debut_regle'],
+                                            "fin": p.get('tech_fin_score', p['fin']),
+                                            "periodes": [p]
+                                        }
+                                blocs_qualibat.append(bloc_actuel)
+
+                                # On identifie le bloc qui contient date_eng
+                                bloc_cible = next((b for b in blocs_qualibat if b['debut'] <= date_eng <= b['fin']), None)
+                                if bloc_cible:
+                                    # Parmi les périodes de ce bloc, on prend le certificat le plus récent
+                                    plus_recent = max(bloc_cible['periodes'], key=lambda x: x.get('tech_fin_score', x['fin']))
+                                    meilleure_ligne = {**meilleure_ligne, "url": plus_recent['url']}
+
                             # ---> C'EST ICI LA CORRECTION : On réinjecte bien tes clés status_rge et historique
                             domaines_finaux[dom] = {
                                 **meilleure_ligne, 
-                                "status_rge": status, 
+                                "status_rge": status,
                                 "historique": periodes
                             }
 
