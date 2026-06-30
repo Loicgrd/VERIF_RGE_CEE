@@ -200,75 +200,71 @@ if st.button("🔍 Analyser les SIRET", type="primary"):
                             except:
                                 continue
                                 
-                        domaines_finaux = {}
-                        for dom, periodes in domaines_raw.items():
-                        
-                            # 1. On cherche en priorité les lignes où l'engagement est stricto sensu dans la période de qualification technique
-                            lignes_strictes = [p for p in periodes if p.get('tech_fin_score') and p['tech_debut_score'] <= date_eng <= p['tech_fin_score']]
-                            
-                            if lignes_strictes:
-                                meilleure_ligne = min(lignes_strictes, key=lambda x: (date_eng - x['tech_debut_score']).days)
-                                status = True
-                                
-                            else:
-                                # 2. Fallback : on regarde la validité globale du lien PDF
-                                lignes_valides = [p for p in periodes if p['lien_debut_regle'] <= date_eng <= p['fin']]
-                                
-                                if lignes_valides:
-                                    # On privilégie les lignes passées
-                                    lignes_passees = [p for p in lignes_valides if p['tech_debut_score'] <= date_eng]
-                                    if lignes_passees:
-                                        meilleure_ligne = min(lignes_passees, key=lambda x: (date_eng - x['tech_debut_score']).days)
-                                    else:
-                                        # Sécurité ultime
-                                        meilleure_ligne = min(lignes_valides, key=lambda x: abs((x['tech_debut_score'] - date_eng).days))
-                                    status = True
-                                    
+                    domaines_finaux = {}
+                    for dom, periodes in domaines_raw.items():
+
+                        # 1. On cherche en priorité les lignes où l'engagement est stricto sensu dans la période de qualification technique
+                        lignes_strictes = [p for p in periodes if p.get('tech_fin_score') and p['tech_debut_score'] <= date_eng <= p['tech_fin_score']]
+
+                        if lignes_strictes:
+                            meilleure_ligne = min(lignes_strictes, key=lambda x: (date_eng - x['tech_debut_score']).days)
+                            status = True
+
+                        else:
+                            # 2. Fallback : on regarde la validité globale du lien PDF
+                            lignes_valides = [p for p in periodes if p['lien_debut_regle'] <= date_eng <= p['fin']]
+
+                            if lignes_valides:
+                                # On privilégie les lignes passées
+                                lignes_passees = [p for p in lignes_valides if p['tech_debut_score'] <= date_eng]
+                                if lignes_passees:
+                                    meilleure_ligne = min(lignes_passees, key=lambda x: (date_eng - x['tech_debut_score']).days)
                                 else:
-                                    # 3. Aucun certificat valide à cette date : l'entreprise est expirée pour ce domaine
-                                    meilleure_ligne = max(periodes, key=lambda x: x['fin'])
-                                    status = False
-                                    
+                                    # Sécurité ultime
+                                    meilleure_ligne = min(lignes_valides, key=lambda x: abs((x['tech_debut_score'] - date_eng).days))
+                                status = True
 
-                            
+                            else:
+                                # 3. Aucun certificat valide à cette date : l'entreprise est expirée pour ce domaine
+                                meilleure_ligne = max(periodes, key=lambda x: x['fin'])
+                                status = False
 
-                            # QUALIBAT : surcharge de l'URL avec le certificat le plus récent
-                            organisme = periodes[0].get('organisme', '') if periodes else ''
-                            if organisme == 'qualibat' and status:
-                                # On réutilise la même logique de fusion que pour l'affichage
-                                hist_trie = sorted(periodes, key=lambda x: x['lien_debut_regle'])
-                                blocs_qualibat = []
-                                bloc_actuel = {
-                                    "debut": hist_trie[0]['lien_debut_regle'],
-                                    "fin": hist_trie[0].get('tech_fin_score', hist_trie[0]['fin']),
-                                    "periodes": [hist_trie[0]]
-                                }
-                                for p in hist_trie[1:]:
-                                    if p['lien_debut_regle'] <= bloc_actuel['fin'] + timedelta(days=0):
-                                        bloc_actuel['fin'] = max(bloc_actuel['fin'], p.get('tech_fin_score', p['fin']))
-                                        bloc_actuel['periodes'].append(p)
-                                    else:
-                                        blocs_qualibat.append(bloc_actuel)
-                                        bloc_actuel = {
-                                            "debut": p['lien_debut_regle'],
-                                            "fin": p.get('tech_fin_score', p['fin']),
-                                            "periodes": [p]
-                                        }
-                                blocs_qualibat.append(bloc_actuel)
-
-                                # On identifie le bloc qui contient date_eng
-                                bloc_cible = next((b for b in blocs_qualibat if b['debut'] <= date_eng <= b['fin']), None)
-                                if bloc_cible:
-                                    # Parmi les périodes de ce bloc, on prend le certificat le plus récent
-                                    plus_recent = max(bloc_cible['periodes'], key=lambda x: x.get('tech_fin_score', x['fin']))
-                                    meilleure_ligne = {**meilleure_ligne, "url": plus_recent['url']}
-
-                            # ---> C'EST ICI LA CORRECTION : On réinjecte bien tes clés status_rge et historique
-                            domaines_finaux[dom] = {
-                                **meilleure_ligne, 
-                                "status_rge": status,
-                                "historique": periodes
+                        # QUALIBAT : surcharge de l'URL avec le certificat le plus récent
+                        organisme = periodes[0].get('organisme', '') if periodes else ''
+                        if organisme == 'qualibat' and status:
+                            # On réutilise la même logique de fusion que pour l'affichage
+                            hist_trie = sorted(periodes, key=lambda x: x['lien_debut_regle'])
+                            blocs_qualibat = []
+                            bloc_actuel = {
+                                "debut": hist_trie[0]['lien_debut_regle'],
+                                "fin": hist_trie[0].get('tech_fin_score', hist_trie[0]['fin']),
+                                "periodes": [hist_trie[0]]
                             }
+                            for p in hist_trie[1:]:
+                                if p['lien_debut_regle'] <= bloc_actuel['fin'] + timedelta(days=0):
+                                    bloc_actuel['fin'] = max(bloc_actuel['fin'], p.get('tech_fin_score', p['fin']))
+                                    bloc_actuel['periodes'].append(p)
+                                else:
+                                    blocs_qualibat.append(bloc_actuel)
+                                    bloc_actuel = {
+                                        "debut": p['lien_debut_regle'],
+                                        "fin": p.get('tech_fin_score', p['fin']),
+                                        "periodes": [p]
+                                    }
+                            blocs_qualibat.append(bloc_actuel)
+
+                            # On identifie le bloc qui contient date_eng
+                            bloc_cible = next((b for b in blocs_qualibat if b['debut'] <= date_eng <= b['fin']), None)
+                            if bloc_cible:
+                                # Parmi les périodes de ce bloc, on prend le certificat le plus récent
+                                plus_recent = max(bloc_cible['periodes'], key=lambda x: x.get('tech_fin_score', x['fin']))
+                                meilleure_ligne = {**meilleure_ligne, "url": plus_recent['url']}
+
+                        domaines_finaux[dom] = {
+                            **meilleure_ligne,
+                            "status_rge": status,
+                            "historique": periodes
+                        }
 
                     all_results.append({
                         "SIRET": s, 
