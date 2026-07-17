@@ -212,7 +212,14 @@ if st.button("🔍 Analyser les SIRET", type="primary"):
                                 
                             else:
                                 # 2. Fallback : on regarde la validité globale du lien PDF
-                                lignes_valides = [p for p in periodes if p['lien_debut_regle'] <= date_eng <= p['fin']]
+                                # ⚠️ QUALIBAT : lien_date_fin est la fin du cycle entier (partagée par toutes
+                                # les lignes), pas la fin réelle de chaque période. On utilise donc la
+                                # date_fin réelle (tech_fin_score) pour ne pas valider dans un trou.
+                                organisme_dom = periodes[0].get('organisme', '') if periodes else ''
+                                if organisme_dom == 'qualibat':
+                                    lignes_valides = [p for p in periodes if p['lien_debut_regle'] <= date_eng <= p.get('tech_fin_score', p['fin'])]
+                                else:
+                                    lignes_valides = [p for p in periodes if p['lien_debut_regle'] <= date_eng <= p['fin']]
                                 
                                 if lignes_valides:
                                     # On privilégie les lignes passées
@@ -563,10 +570,6 @@ if 'audit_results' in st.session_state:
             
             nom_fichier = f"Export_{date_eng}.xlsx"
             st.download_button("⬇️ Télécharger Excel", data=output.getvalue(), file_name=nom_fichier, width="stretch")
-
-
-
-
 
 
 
