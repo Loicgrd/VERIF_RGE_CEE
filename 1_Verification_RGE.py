@@ -415,16 +415,24 @@ if 'audit_results' in st.session_state:
                     fin_affiche = info['fin']
 
                     # 1. On calcule les blocs globaux dans TOUS les cas (Valide comme Expiré)
+                    # ⚠️ QUALIBAT : lien_date_fin est la fin du cycle entier → on fusionne sur la
+                    # date_fin réelle (tech_fin_score) pour ne pas écraser les trous.
+                    organisme_aff = info['historique'][0].get('organisme', '') if info['historique'] else ''
+                    def fin_ligne(h):
+                        if organisme_aff == 'qualibat':
+                            return h.get('tech_fin_score', h['fin'])
+                        return h['fin']
+
                     hist_trie = sorted(info['historique'], key=lambda x: x['lien_debut_regle'])
                     blocs = []
-                    bloc_actuel = [hist_trie[0]['lien_debut_regle'], hist_trie[0]['fin']]
+                    bloc_actuel = [hist_trie[0]['lien_debut_regle'], fin_ligne(hist_trie[0])]
 
                     for h in hist_trie[1:]:
                         if h['lien_debut_regle'] <= bloc_actuel[1] + timedelta(days=1):
-                            bloc_actuel[1] = max(bloc_actuel[1], h['fin'])
+                            bloc_actuel[1] = max(bloc_actuel[1], fin_ligne(h))
                         else:
                             blocs.append(bloc_actuel)
-                            bloc_actuel = [h['lien_debut_regle'], h['fin']]
+                            bloc_actuel = [h['lien_debut_regle'], fin_ligne(h)]
                     blocs.append(bloc_actuel)
 
                     # Vérification locale en temps réel par rapport à la date du calendrier
@@ -570,7 +578,3 @@ if 'audit_results' in st.session_state:
             
             nom_fichier = f"Export_{date_eng}.xlsx"
             st.download_button("⬇️ Télécharger Excel", data=output.getvalue(), file_name=nom_fichier, width="stretch")
-
-
-
-
