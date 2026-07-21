@@ -200,6 +200,34 @@ if st.button("🔍 Analyser les SIRET", type="primary"):
                             except:
                                 continue
                                 
+                        # --- QUALIBAT : calcul d'une "fin réelle" par cycle ---
+                        # lien_date_fin (= 'fin') est la fin THÉORIQUE du cycle de qualification,
+                        # partagée par toutes les lignes du même cycle. Elle n'est fiable que si
+                        # aucun cycle suivant ne la contredit (= ne démarre pas avant elle).
+                        # Si un cycle suivant démarre avant cette fin théorique, c'est la preuve que
+                        # la qualification a été interrompue avant son terme : on se rabat alors sur
+                        # le dernier 'tech_fin_score' (date_fin réelle) observé pour ce cycle.
+                        for dom, periodes in domaines_raw.items():
+                            if not periodes or periodes[0].get('organisme') != 'qualibat':
+                                continue
+                            # Regroupement par cycle (identifié par sa fin théorique partagée)
+                            cycles = {}
+                            for p in periodes:
+                                cycles.setdefault(p['fin'], []).append(p)
+                            cycles_tries = sorted(cycles.items(), key=lambda kv: min(x['lien_debut_regle'] for x in kv[1]))
+                            for idx, (fin_theorique, lignes_cycle) in enumerate(cycles_tries):
+                                cycle_suivant_debut = None
+                                if idx + 1 < len(cycles_tries):
+                                    cycle_suivant_debut = min(x['lien_debut_regle'] for x in cycles_tries[idx + 1][1])
+                                if cycle_suivant_debut and cycle_suivant_debut <= fin_theorique:
+                                    # Chevauchement détecté : la fin théorique n'a jamais été atteinte
+                                    fin_reelle = max(x['tech_fin_score'] for x in lignes_cycle)
+                                else:
+                                    # Pas de contradiction : la fin théorique est fiable
+                                    fin_reelle = fin_theorique
+                                for p in lignes_cycle:
+                                    p['fin_reelle'] = fin_reelle
+
                         domaines_finaux = {}
                         for dom, periodes in domaines_raw.items():
                         
@@ -212,12 +240,12 @@ if st.button("🔍 Analyser les SIRET", type="primary"):
                                 
                             else:
                                 # 2. Fallback : on regarde la validité globale du lien PDF
-                                # ⚠️ QUALIBAT : lien_date_fin est la fin du cycle entier (partagée par toutes
-                                # les lignes), pas la fin réelle de chaque période. On utilise donc la
-                                # date_fin réelle (tech_fin_score) pour ne pas valider dans un trou.
+                                # ⚠️ QUALIBAT : on utilise 'fin_reelle' calculée par cycle (voir plus haut),
+                                # qui vaut lien_date_fin si non contredite par un cycle suivant, sinon la
+                                # date_fin réelle du dernier snapshot du cycle.
                                 organisme_dom = periodes[0].get('organisme', '') if periodes else ''
                                 if organisme_dom == 'qualibat':
-                                    lignes_valides = [p for p in periodes if p['lien_debut_regle'] <= date_eng <= p.get('tech_fin_score', p['fin'])]
+                                    lignes_valides = [p for p in periodes if p['lien_debut_regle'] <= date_eng <= p.get('fin_reelle', p['fin'])]
                                 else:
                                     lignes_valides = [p for p in periodes if p['lien_debut_regle'] <= date_eng <= p['fin']]
                                 
@@ -420,7 +448,7 @@ if 'audit_results' in st.session_state:
                     organisme_aff = info['historique'][0].get('organisme', '') if info['historique'] else ''
                     def fin_ligne(h):
                         if organisme_aff == 'qualibat':
-                            return h.get('tech_fin_score', h['fin'])
+                            return h.get('fin_reelle', h['fin'])
                         return h['fin']
 
                     hist_trie = sorted(info['historique'], key=lambda x: x['lien_debut_regle'])
