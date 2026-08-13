@@ -184,6 +184,14 @@ if st.button("🔍 Analyser les SIRET", type="primary"):
                                 tech_fin_str = line.get('date_fin')
                                 d_tech_fin = datetime.strptime(tech_fin_str[:10], '%Y-%m-%d').date() if tech_fin_str else d_lien_fin
 
+                                # ⚠️ QUALIBAT : le dernier snapshot ADEME (date_fin) peut légèrement
+                                # dépasser la fin officielle du cycle (lien_date_fin), par décalage
+                                # administratif (ex: 2 jours après). On plafonne donc la date de fin
+                                # technique à la fin officielle du cycle pour ne jamais valider au-delà
+                                # de la fin réelle déclarée de la qualification.
+                                if str(line.get('organisme', '')).lower().strip() == 'qualibat':
+                                    d_tech_fin = min(d_tech_fin, d_lien_fin)
+
 
                                 if dom not in domaines_raw:
                                     domaines_raw[dom] = []
@@ -231,38 +239,47 @@ if st.button("🔍 Analyser les SIRET", type="primary"):
                         domaines_finaux = {}
                         for dom, periodes in domaines_raw.items():
                         
-                            # 1. On cherche en priorité les lignes où l'engagement est stricto sensu dans la période de qualification technique
-                            lignes_strictes = [p for p in periodes if p.get('tech_fin_score') and p['tech_debut_score'] <= date_eng <= p['tech_fin_score']]
-                            
-                            if lignes_strictes:
-                                meilleure_ligne = min(lignes_strictes, key=lambda x: (date_eng - x['tech_debut_score']).days)
-                                status = True
-                                
-                            else:
-                                # 2. Fallback : on regarde la validité globale du lien PDF
-                                # ⚠️ QUALIBAT : on utilise 'fin_reelle' calculée par cycle (voir plus haut),
-                                # qui vaut lien_date_fin si non contredite par un cycle suivant, sinon la
-                                # date_fin réelle du dernier snapshot du cycle.
-                                organisme_dom = periodes[0].get('organisme', '') if periodes else ''
-                                if organisme_dom == 'qualibat':
-                                    lignes_valides = [p for p in periodes if p['lien_debut_regle'] <= date_eng <= p.get('fin_reelle', p['fin'])]
-                                else:
-                                    lignes_valides = [p for p in periodes if p['lien_debut_regle'] <= date_eng <= p['fin']]
-                                
+                            organisme_dom = periodes[0].get('organisme', '') if periodes else ''
+
+                            if organisme_dom == 'qualibat':
+                                # ⚠️ Pour Qualibat, seules lien_date_debut / lien_date_fin font foi pour
+                                # la validité. date_debut / date_fin (tech_debut_score / tech_fin_score)
+                                # ne sont que des dates d'insertion ADEME, pas des bornes de validité —
+                                # on ne les utilise plus que pour choisir le certificat le plus récent.
+                                lignes_valides = [p for p in periodes if p['lien_debut_regle'] <= date_eng <= p.get('fin_reelle', p['fin'])]
                                 if lignes_valides:
-                                    # On privilégie les lignes passées
-                                    lignes_passees = [p for p in lignes_valides if p['tech_debut_score'] <= date_eng]
-                                    if lignes_passees:
-                                        meilleure_ligne = min(lignes_passees, key=lambda x: (date_eng - x['tech_debut_score']).days)
-                                    else:
-                                        # Sécurité ultime
-                                        meilleure_ligne = min(lignes_valides, key=lambda x: abs((x['tech_debut_score'] - date_eng).days))
+                                    meilleure_ligne = max(lignes_valides, key=lambda x: x['tech_fin_score'])
                                     status = True
-                                    
                                 else:
-                                    # 3. Aucun certificat valide à cette date : l'entreprise est expirée pour ce domaine
                                     meilleure_ligne = max(periodes, key=lambda x: x['fin'])
                                     status = False
+
+                            else:
+                                # 1. On cherche en priorité les lignes où l'engagement est stricto sensu dans la période de qualification technique
+                                lignes_strictes = [p for p in periodes if p.get('tech_fin_score') and p['tech_debut_score'] <= date_eng <= p['tech_fin_score']]
+
+                                if lignes_strictes:
+                                    meilleure_ligne = min(lignes_strictes, key=lambda x: (date_eng - x['tech_debut_score']).days)
+                                    status = True
+
+                                else:
+                                    # 2. Fallback : on regarde la validité globale du lien PDF
+                                    lignes_valides = [p for p in periodes if p['lien_debut_regle'] <= date_eng <= p['fin']]
+
+                                    if lignes_valides:
+                                        # On privilégie les lignes passées
+                                        lignes_passees = [p for p in lignes_valides if p['tech_debut_score'] <= date_eng]
+                                        if lignes_passees:
+                                            meilleure_ligne = min(lignes_passees, key=lambda x: (date_eng - x['tech_debut_score']).days)
+                                        else:
+                                            # Sécurité ultime
+                                            meilleure_ligne = min(lignes_valides, key=lambda x: abs((x['tech_debut_score'] - date_eng).days))
+                                        status = True
+
+                                    else:
+                                        # 3. Aucun certificat valide à cette date : l'entreprise est expirée pour ce domaine
+                                        meilleure_ligne = max(periodes, key=lambda x: x['fin'])
+                                        status = False
                                     
 
                             
