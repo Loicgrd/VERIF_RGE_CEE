@@ -548,6 +548,7 @@ if 'audit_results' in st.session_state:
                         df_g = pd.DataFrame(graph_data)
                         df_g["Début"], df_g["Fin"] = pd.to_datetime(df_g["Début"]), pd.to_datetime(df_g["Fin"])
                         fig = px.timeline(df_g, x_start="Début", x_end="Fin", y="Domaine", color="Statut", color_discrete_map={"Valide": "#28a745", "Expiré": "#dee2e6"})
+                        fig.update_traces(hovertemplate="<b>%{y}</b><br>Début : %{base|%d/%m/%Y}<br>Fin : %{x|%d/%m/%Y}<extra></extra>")
                         fig.add_vline(x=pd.to_datetime(date_eng).timestamp() * 1000, line_dash="dash", line_color="blue")
                         fig.update_layout(barcornerradius=10, height=max(180, (len(df_g["Domaine"].unique()) * 30) + 80), margin=dict(l=0, r=0, t=30, b=60),
                                           yaxis={'title': None, 'tickfont': {'size': 10}}, xaxis={'visible': True, 'tickfont': {'size': 9}},
