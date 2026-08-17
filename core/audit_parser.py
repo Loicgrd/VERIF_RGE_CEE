@@ -221,6 +221,7 @@ RE_PRICE_INLINE = re.compile(r"[\d][\d\s]{0,9}\s*€")
 
 def _clean_for_parsing(text: str) -> str:
     text = RE_PRICE_INLINE.sub(" ", text)
+    text = text.replace("≈", " ")  # résidu du marqueur de prix (nombre déjà retiré à côté)
     return re.sub(r"\s+", " ", text).strip()
 
 
@@ -373,6 +374,44 @@ def parse_batiment(text: str) -> Batiment:
 # Parsing des postes de travaux dans un bloc "Détail des travaux énergétiques"
 # ---------------------------------------------------------------------------
 
+def _parse_qty(q: str) -> tuple[float, str] | None:
+    m = re.match(r"^\s*([\d,.]+)\s*(m²|u\.)\s*$", q or "")
+    if not m:
+        return None
+    try:
+        return float(m.group(1).replace(",", ".")), m.group(2)
+    except ValueError:
+        return None
+
+
+def _format_qty(value: float, unit: str) -> str:
+    s = f"{value:.2f}".rstrip("0").rstrip(".")
+    return f"{s} {unit}"
+
+
+def _merge_duplicate_travaux(travaux: list[Travail]) -> list[Travail]:
+    """Un même produit (isolant, menuiserie...) revient souvent une fois par
+    orientation/zone (Pignon, Façade Nord, Balcon RdC...) sans que le texte de
+    l'audit ne distingue la localisation — même nature + mêmes caractéristiques
+    => une seule ligne, quantités additionnées quand elles sont indiquées."""
+    merged: list[Travail] = []
+    index: dict[tuple, int] = {}
+    for t in travaux:
+        key = (t.poste, t.nature_courte, t.caracteristiques)
+        if key in index:
+            existing = merged[index[key]]
+            q1 = _parse_qty(existing.quantite)
+            q2 = _parse_qty(t.quantite)
+            if q1 and q2 and q1[1] == q2[1]:
+                existing.quantite = _format_qty(q1[0] + q2[0], q1[1])
+            elif not existing.quantite and t.quantite:
+                existing.quantite = t.quantite
+        else:
+            index[key] = len(merged)
+            merged.append(t)
+    return merged
+
+
 def parse_travaux_block(block: str) -> list[Travail]:
     headers = list(RE_POSTE_HEADER.finditer(block))
     travaux: list[Travail] = []
@@ -399,7 +438,7 @@ def parse_travaux_block(block: str) -> list[Travail]:
                 description=description[:600],
             )
         )
-    return travaux
+    return _merge_duplicate_travaux(travaux)
 
 
 # ---------------------------------------------------------------------------
