@@ -101,7 +101,7 @@ RE_SCENARIO_HEADER = re.compile(
     re.I,
 )
 RE_ETAPE_HEADER = re.compile(
-    r"^(Premi[èe]re|Deuxi[èe]me|Derni[èe]re|Seule)\s+[ée]tape", re.I | re.M
+    r"^\s*(Premi[èe]re|Deuxi[èe]me|Derni[èe]re|Seule)\s+[ée]tape", re.I | re.M
 )
 RE_PCT_ECONOMIE = re.compile(r"-\s*(\d{1,3})\s*%")
 RE_LETTRE_EXPLICITE = re.compile(r"lettre\s+([A-G])\b")
