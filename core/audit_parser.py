@@ -134,6 +134,99 @@ RE_POSTE_HEADER = re.compile(
     re.M,
 )
 
+# ---------------------------------------------------------------------------
+# Étiquette DPE calculée à partir du CEP (arrêté du 8 octobre 2021, seuils énergie
+# primaire — la note GES n'est pas exploitée ici : en cas de doute, la lettre
+# explicitement écrite dans le document ("atteindre la lettre X") prime toujours).
+# ---------------------------------------------------------------------------
+
+CEP_THRESHOLDS = [(70, "A"), (110, "B"), (180, "C"), (250, "D"), (330, "E"), (420, "F")]
+
+
+def cep_to_etiquette(cep: float | None) -> str | None:
+    if cep is None:
+        return None
+    for seuil, lettre in CEP_THRESHOLDS:
+        if cep <= seuil:
+            return lettre
+    return "G"
+
+
+# ---------------------------------------------------------------------------
+# Extraction ciblée des caractéristiques techniques / surface / quantité dans la
+# description d'un poste de travaux (mots-clés, sans IA).
+# ---------------------------------------------------------------------------
+
+SPEC_SPECS: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"(?:R\s*(?:>=|>|=|≥)|[Rr]ésistance\s+thermique[^\n.]{0,40}?(?:>=|>|=|≥))\s*([\d,.]+)\s*m[²2]\.?\s*K\s*/\s*W"), "R ≥ {0} m².K/W"),
+    (re.compile(r"Th\s*(\d+)(?:\s+(\d+)\s*mm)?", re.I), None),  # géré à part (2 groupes optionnels)
+    (re.compile(r"SCOP\s*(?:>=|>|=)?\s*([\d,.]+)", re.I), "SCOP ≥ {0}"),
+    (re.compile(r"Uw?\s*(?:>=|>|=|≥)?\s*([\d,.]+)\s*W\s*/\s*m[²2]\.?\s*K", re.I), "Uw = {0} W/m².K"),
+    (re.compile(r"Sw\s*(?:>=|>|=)?\s*([\d,.]+)", re.I), "Sw = {0}"),
+    (re.compile(r"[ée]paisseur[^\n.]{0,20}?([\d,.]+)\s*(mm|cm)", re.I), "Épaisseur {0}{1}"),
+    (re.compile(r"contenance[^\n.]{0,20}?([\d,.]+)\s*L\b", re.I), "Ballon {0}L"),
+    (re.compile(r"Ud\s*=?\s*([\d,.]+)\s*W\s*/\s*m[²2]\.?\s*K", re.I), "Ud = {0} W/m².K"),
+]
+
+RE_QTY_SURFACE = re.compile(r"[Ss]urface\s+concern[ée]e?\s*=?\s*\[?([\d,.]+)\]?\s*m[²2]")
+RE_QTY_SURFACE_FALLBACK = re.compile(r"([\d,.]+)\s*m[²2](?!\.?\s*K\s*/\s*W)\b")
+RE_QTY_UNITE = re.compile(r"\b(\d+)\s*(?:u\.|unit[ée]s?)\b", re.I)
+
+# Un montant en euros s'insère parfois au milieu d'une phrase après la reconstruction
+# x/y (colonne "coût" adjacente au texte) : on le retire avant toute analyse de texte.
+RE_PRICE_INLINE = re.compile(r"[\d][\d\s]{0,9}\s*€")
+
+
+def _clean_for_parsing(text: str) -> str:
+    text = RE_PRICE_INLINE.sub(" ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _extract_specs(text: str) -> str:
+    text = _clean_for_parsing(text)
+    parts: list[str] = []
+    for rex, template in SPEC_SPECS:
+        m = rex.search(text)
+        if not m:
+            continue
+        if template is None:  # cas "Th35 130 mm"
+            val = f"Th{m.group(1)}" + (f" {m.group(2)}mm" if m.group(2) else "")
+        else:
+            val = template.format(*m.groups())
+        if val not in parts:
+            parts.append(val)
+    return " ; ".join(parts)
+
+
+def _extract_quantite(text: str) -> str:
+    text = _clean_for_parsing(text)
+    m = RE_QTY_SURFACE.search(text)
+    if m:
+        return f"{m.group(1)} m²"
+    m = RE_QTY_SURFACE_FALLBACK.search(text)
+    if m:
+        return f"{m.group(1)} m²"
+    m = RE_QTY_UNITE.search(text)
+    if m:
+        return f"{m.group(1)} u."
+    return ""
+
+
+def _first_sentence(text: str) -> str:
+    """Première phrase, sans se faire piéger par un point décimal (ex. "SCOP >= 4.6")."""
+    text = _clean_for_parsing(text)
+    i = 0
+    while True:
+        idx = text.find(".", i)
+        if idx == -1:
+            return text[:150].strip()
+        before = text[idx - 1] if idx > 0 else ""
+        after = text[idx + 1] if idx + 1 < len(text) else ""
+        if before.isdigit() and after.isdigit():
+            i = idx + 1
+            continue
+        return text[: idx + 1].strip()
+
 
 def _num(s: str | None) -> float | None:
     if not s:
@@ -153,8 +246,18 @@ def _num(s: str | None) -> float | None:
 @dataclass
 class Travail:
     poste: str
-    description: str
+    nature_courte: str        # ex. "Isolation des murs périphériques par l'extérieur."
+    caracteristiques: str      # ex. "R >= 4,4 m².K/W ; Th35 130 mm"
+    quantite: str              # ex. "173.35 m²"
+    description: str = ""      # texte brut complet (référence / debug)
     cout_ttc: float | None = None
+
+    @property
+    def nature_affichee(self) -> str:
+        """Colonne "Nature des travaux" : poste + phrase courte entre parenthèses."""
+        if self.nature_courte:
+            return f"{self.poste} ({self.nature_courte})"
+        return self.poste
 
 
 @dataclass
@@ -222,6 +325,10 @@ def parse_batiment(text: str) -> Batiment:
         b.cep_initial = _num(m.group(1))
         b.cef_initial = _num(m.group(2))
 
+    # étiquette : lettre explicite si trouvée, sinon calculée depuis le CEP
+    m = RE_LETTRE_EXPLICITE.search(text[: idx if idx != -1 else 3000])
+    b.etiquette_initiale = m.group(1) if m else cep_to_etiquette(b.cep_initial)
+
     return b
 
 
@@ -247,7 +354,17 @@ def parse_travaux_block(block: str) -> list[Travail]:
         couts = RE_COUT.findall(chunk)
         cout = _num(couts[-1]) if couts else None
         description = re.sub(r"\s+", " ", chunk).strip()
-        travaux.append(Travail(poste=poste_label, description=description[:600], cout_ttc=cout))
+
+        travaux.append(
+            Travail(
+                poste=poste_label,
+                nature_courte=_first_sentence(description),
+                caracteristiques=_extract_specs(description),
+                quantite=_extract_quantite(description),
+                description=description[:600],
+                cout_ttc=cout,
+            )
+        )
     return travaux
 
 
@@ -330,8 +447,7 @@ def _parse_etape(libelle: str, block: str) -> Etape:
         e.cef_apres = _num(m.group(2))
 
     m = RE_LETTRE_EXPLICITE.search(block)
-    if m:
-        e.etiquette_apres = m.group(1)
+    e.etiquette_apres = m.group(1) if m else cep_to_etiquette(e.cep_apres)
 
     couts = RE_COUT.findall(window)
     if couts:
