@@ -161,7 +161,13 @@ for tab, sc in zip(tabs, scenarios):
                 st.markdown("_Travaux détectés (modifiable) :_")
                 edited = st.data_editor(
                     [
-                        {"Poste": t.poste, "Description": t.description, "Coût TTC (€)": t.cout_ttc}
+                        {
+                            "Poste": t.poste,
+                            "Nature (phrase courte)": t.nature_courte,
+                            "Caractéristiques / Marque et référence": t.caracteristiques,
+                            "Surface / Quantité": t.quantite,
+                            "Coût TTC (€)": t.cout_ttc,
+                        }
                         for t in e.travaux
                     ],
                     num_rows="dynamic",
@@ -172,11 +178,13 @@ for tab, sc in zip(tabs, scenarios):
                 e.travaux = [
                     Travail(
                         poste=row.get("Poste") or "",
-                        description=row.get("Description") or "",
+                        nature_courte=row.get("Nature (phrase courte)") or "",
+                        caracteristiques=row.get("Caractéristiques / Marque et référence") or "",
+                        quantite=row.get("Surface / Quantité") or "",
                         cout_ttc=row.get("Coût TTC (€)"),
                     )
                     for row in edited
-                    if (row.get("Poste") or row.get("Description"))
+                    if (row.get("Poste") or row.get("Nature (phrase courte)"))
                 ]
 
         st.markdown("")
@@ -206,13 +214,13 @@ for tab, sc in zip(tabs, scenarios):
 
                 all_travaux = []
                 for e in sc.etapes:
-                    prefix = f"{e.libelle} — " if len(sc.etapes) > 1 else ""
+                    suffix = f" — {e.libelle}" if len(sc.etapes) > 1 else ""
                     for t in e.travaux:
                         all_travaux.append(
                             {
-                                "nature": f"{prefix}{t.poste}".strip(" —"),
-                                "carac": t.description,
-                                "quantite": "",
+                                "nature": f"{t.nature_affichee}{suffix}",
+                                "carac": t.caracteristiques,
+                                "quantite": t.quantite,
                             }
                         )
 
@@ -225,11 +233,15 @@ for tab, sc in zip(tabs, scenarios):
 
                 for i, t in enumerate(all_travaux):
                     r = start_row + i
+                    # Travaux préconisés
                     ws.cell(row=r, column=2, value=t["nature"])
                     ws.cell(row=r, column=3, value=t["carac"])
                     ws.cell(row=r, column=4, value=t["quantite"])
-                    # Colonnes "Travaux réalisés" / tableau "Entreprises" laissés vides :
-                    # non renseignés dans un audit énergétique.
+                    # Travaux réalisés : mêmes valeurs par défaut (l'audit ne distingue
+                    # pas "préconisé" de "réalisé" — à ajuster manuellement après chantier)
+                    ws.cell(row=r, column=5, value=t["nature"])
+                    ws.cell(row=r, column=6, value=t["carac"])
+                    ws.cell(row=r, column=7, value=t["quantite"])
 
                 buf = io.BytesIO()
                 wb.save(buf)
