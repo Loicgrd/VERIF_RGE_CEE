@@ -121,10 +121,55 @@ for sc in scenarios:
                 "Étiquette avant": batiment.etiquette_initiale,
                 "Étiquette après": e.etiquette_apres,
                 "Économie": f"{e.economie_pct}%" if e.economie_pct is not None else "—",
-                "Coût travaux TTC": e.cout_travaux_ttc,
             }
         )
 st.dataframe(summary_rows, use_container_width=True, hide_index=True)
+
+st.divider()
+
+# ---------------------------------------------------------------------------
+# Grille croisée : types de travaux détectés × scénarios
+# ---------------------------------------------------------------------------
+
+st.header("🧩 Travaux par scénario")
+st.caption("✅ ce type de travaux est présent dans le scénario · ❌ absent")
+
+# Mêmes catégories que le "Poste" affiché avant la parenthèse dans "Nature des travaux".
+TRAVAUX_TYPES = [
+    ("Murs", ["Murs"]),
+    ("Plancher bas", ["Plancher", "Planchers bas"]),
+    ("Toiture / Combles", ["Toiture / Combles"]),
+    ("Menuiseries", ["Menuiseries"]),
+    ("Ventilation", ["Ventilation"]),
+    ("Chauffage", ["Chauffage"]),
+    ("Eau chaude sanitaire", ["Eau chaude sanitaire"]),
+]
+
+
+def _cellule(sc, postes):
+    present = any(t.poste in postes for e in sc.etapes for t in e.travaux)
+    return "✅" if present else "❌"
+
+
+try:
+    import pandas as pd
+
+    matrix = pd.DataFrame(
+        {sc.nom.replace("\n", " "): [_cellule(sc, postes) for _, postes in TRAVAUX_TYPES] for sc in scenarios},
+        index=[label for label, _ in TRAVAUX_TYPES],
+    )
+
+    def _style(v):
+        colors = {"✅": "background-color:#1e7e34;color:white", "❌": "background-color:#b02a37;color:white"}
+        return colors.get(v, "background-color:#3a3a3a;color:#bbb") + ";text-align:center;font-weight:600"
+
+    st.dataframe(matrix.style.map(_style), use_container_width=True)
+except ImportError:
+    st.dataframe(
+        [{"Type de travaux": label, **{sc.nom.replace("\n", " "): _cellule(sc, postes) for sc in scenarios}} for label, postes in TRAVAUX_TYPES],
+        use_container_width=True,
+        hide_index=True,
+    )
 
 st.divider()
 
@@ -141,7 +186,7 @@ for tab, sc in zip(tabs, scenarios):
         for ei, e in enumerate(sc.etapes):
             with st.container(border=True):
                 st.markdown(f"**{e.libelle}**")
-                m1, m2, m3, m4, m5 = st.columns(5)
+                m1, m2, m3, m4 = st.columns(4)
                 e.cep_apres = m1.number_input(
                     "CEP après", value=float(e.cep_apres or 0), step=1.0, key=f"cep_{sc.id}_{ei}"
                 )
@@ -154,9 +199,6 @@ for tab, sc in zip(tabs, scenarios):
                 e.economie_pct = m4.number_input(
                     "Économie %", value=float(e.economie_pct or 0), step=1.0, key=f"eco_{sc.id}_{ei}"
                 )
-                e.cout_travaux_ttc = m5.number_input(
-                    "Coût TTC (€)", value=float(e.cout_travaux_ttc or 0), step=100.0, key=f"cout_{sc.id}_{ei}"
-                )
 
                 st.markdown("_Travaux détectés (modifiable) :_")
                 edited = st.data_editor(
@@ -166,7 +208,6 @@ for tab, sc in zip(tabs, scenarios):
                             "Nature (phrase courte)": t.nature_courte,
                             "Caractéristiques / Marque et référence": t.caracteristiques,
                             "Surface / Quantité": t.quantite,
-                            "Coût TTC (€)": t.cout_ttc,
                         }
                         for t in e.travaux
                     ],
@@ -181,7 +222,6 @@ for tab, sc in zip(tabs, scenarios):
                         nature_courte=row.get("Nature (phrase courte)") or "",
                         caracteristiques=row.get("Caractéristiques / Marque et référence") or "",
                         quantite=row.get("Surface / Quantité") or "",
-                        cout_ttc=row.get("Coût TTC (€)"),
                     )
                     for row in edited
                     if (row.get("Poste") or row.get("Nature (phrase courte)"))
