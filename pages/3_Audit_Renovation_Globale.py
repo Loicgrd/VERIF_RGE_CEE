@@ -102,37 +102,11 @@ with c2:
 st.divider()
 
 # ---------------------------------------------------------------------------
-# Tableau comparatif
+# Tableau unique : un scénario par colonne (CEP/CEF/étiquette/économie + travaux)
 # ---------------------------------------------------------------------------
 
 st.header("📊 Comparatif des scénarios")
-
-summary_rows = []
-for sc in scenarios:
-    for e in sc.etapes:
-        summary_rows.append(
-            {
-                "Scénario": sc.nom.replace("\n", " "),
-                "Étape": e.libelle,
-                "CEP avant": batiment.cep_initial,
-                "CEP après": e.cep_apres,
-                "CEF avant": batiment.cef_initial,
-                "CEF après": e.cef_apres,
-                "Étiquette avant": batiment.etiquette_initiale,
-                "Étiquette après": e.etiquette_apres,
-                "Économie": f"{e.economie_pct}%" if e.economie_pct is not None else "—",
-            }
-        )
-st.dataframe(summary_rows, use_container_width=True, hide_index=True)
-
-st.divider()
-
-# ---------------------------------------------------------------------------
-# Grille croisée : types de travaux détectés × scénarios
-# ---------------------------------------------------------------------------
-
-st.header("🧩 Travaux par scénario")
-st.caption("✅ ce type de travaux est présent dans le scénario · ❌ absent")
+st.caption("Une colonne par scénario · ✅ / ❌ pour la présence de chaque type de travaux")
 
 # Mêmes catégories que le "Poste" affiché avant la parenthèse dans "Nature des travaux".
 TRAVAUX_TYPES = [
@@ -145,28 +119,34 @@ TRAVAUX_TYPES = [
     ("Eau chaude sanitaire", ["Eau chaude sanitaire"]),
 ]
 
-
-def _cellule(sc, postes):
-    present = any(t.poste in postes for e in sc.etapes for t in e.travaux)
-    return "✅" if present else "❌"
-
+data = {}
+for sc in scenarios:
+    derniere = sc.etapes[-1]  # état final du scénario (après toutes ses étapes)
+    col_label = sc.nom.replace("\n", " ")
+    col = {
+        "Étape(s)": " → ".join(e.libelle for e in sc.etapes),
+        "CEP avant (kWhEP/m²/an)": batiment.cep_initial,
+        "CEP après": derniere.cep_apres,
+        "CEF avant (kWhEF/m²/an)": batiment.cef_initial,
+        "CEF après": derniere.cef_apres,
+        "Étiquette avant": batiment.etiquette_initiale,
+        "Étiquette après": derniere.etiquette_apres,
+        "Économie": f"{derniere.economie_pct}%" if derniere.economie_pct is not None else "—",
+    }
+    for label, postes in TRAVAUX_TYPES:
+        present = any(t.poste in postes for e in sc.etapes for t in e.travaux)
+        col[label] = "✅" if present else "❌"
+    data[col_label] = col
 
 try:
     import pandas as pd
 
-    matrix = pd.DataFrame(
-        {sc.nom.replace("\n", " "): [_cellule(sc, postes) for _, postes in TRAVAUX_TYPES] for sc in scenarios},
-        index=[label for label, _ in TRAVAUX_TYPES],
-    )
-
-    def _style(v):
-        colors = {"✅": "background-color:#1e7e34;color:white", "❌": "background-color:#b02a37;color:white"}
-        return colors.get(v, "background-color:#3a3a3a;color:#bbb") + ";text-align:center;font-weight:600"
-
-    st.dataframe(matrix.style.map(_style), use_container_width=True)
+    df = pd.DataFrame(data)
+    st.dataframe(df, use_container_width=True)
 except ImportError:
+    rows = list(next(iter(data.values())).keys())
     st.dataframe(
-        [{"Type de travaux": label, **{sc.nom.replace("\n", " "): _cellule(sc, postes) for sc in scenarios}} for label, postes in TRAVAUX_TYPES],
+        [{"": row, **{col: data[col][row] for col in data}} for row in rows],
         use_container_width=True,
         hide_index=True,
     )
