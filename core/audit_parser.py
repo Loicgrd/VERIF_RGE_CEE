@@ -69,7 +69,12 @@ def _bytes_io(b: bytes):
 # ---------------------------------------------------------------------------
 
 RE_ADRESSE = re.compile(r"Adresse\s*:\s*(.+?)(?:\n\s*\n|\nType de bien|\nPropri)", re.S | re.I)
-RE_BENEFICIAIRE = re.compile(r"(?:Propri[ée]taire|Commanditaire)\s*:\s*(.+)", re.I)
+# [ \t]* (pas \s*) entre ":" et la valeur : certains audits (ex. DPEWIN) laissent le
+# champ vide ("propriétaire : \n"), et un \s* glouton engloutirait alors le saut de
+# ligne pour capturer le libellé du champ suivant comme s'il s'agissait de la valeur.
+# (\S[^\n]*) exige un premier caractère non blanc, donc un champ vide ne matche pas
+# du tout (beneficiaire reste None) plutôt que de récupérer la mauvaise ligne.
+RE_BENEFICIAIRE = re.compile(r"(?:Propri[ée]taire|Commanditaire)\s*:[ \t]*(\S[^\n]*)", re.I)
 RE_SURFACE = re.compile(r"Surface de r[ée]f[ée]rence\s*:\s*([\d\s.,]+)\s*m", re.I)
 RE_NB_LOGEMENTS = re.compile(r"Nombre de logements?\s*:?\s*(\d+)", re.I)
 RE_DATE_VISITE = re.compile(r"Date de visite\s*:?\s*(\d{2}/\d{2}/\d{4})", re.I)
@@ -101,6 +106,24 @@ def _find_total_climawin(block: str):
     return None
 
 
+# DPEWIN : les libellés EP/EF sont des exposants qui, une fois reconstruits par
+# position x/y, atterrissent sur leur PROPRE ligne plutôt que collés au nombre
+# ("249  (212 )\nEP EF") — voire carrément éclatés sur 4 lignes dans le tableau
+# "Résultats après travaux" ("141\nEP\n  (110 )\n  EF", l'ordre EP/valeur diffère
+# aussi de celui du tableau initial). On aplatit donc les espaces (retours à la
+# ligne compris) puis on teste les deux ordres possibles.
+RE_TOTAL_DPEWIN_A = re.compile(r"(\d[\d,.]*)\s*\(\s*(\d[\d,.]*)\s*\)\s*EP\s*EF", re.I)
+RE_TOTAL_DPEWIN_B = re.compile(r"(\d[\d,.]*)\s*EP\s*\(\s*(\d[\d,.]*)\s*\)\s*EF", re.I)
+
+
+def _find_total_dpewin(block: str, window: int = 2000) -> list[tuple[str, str]]:
+    flat = re.sub(r"\s+", " ", block[:window])
+    out = []
+    for pat in (RE_TOTAL_DPEWIN_A, RE_TOTAL_DPEWIN_B):
+        out.extend(pat.findall(flat))
+    return out
+
+
 RE_ANY_EP = re.compile(r"(\d[\d\s]*)\s*ep\b", re.I)
 RE_ANY_EF = re.compile(r"\(\s*(\d[\d\s]*)\s*ef\s*\)", re.I)
 
@@ -127,6 +150,7 @@ def find_total_ep_ef(block: str) -> tuple[str, str] | None:
     c = _find_total_climawin(block)
     if c:
         candidates.append(c)
+    candidates.extend(_find_total_dpewin(block))
     c = _find_total_by_max(block)
     if c:
         candidates.append(c)
@@ -216,8 +240,8 @@ SPEC_SPECS: list[tuple[re.Pattern, str]] = [
     # Uw/Sw sont parfois donnés sans unité explicite (ex. Pleiades : "Uw de la baie ≤ 1.3")
     # plutôt qu'avec "W/m².K" accolé (ex. LICIEL : "Uw ≤ 1.3 W/m².K") : l'unité est rendue
     # optionnelle et un éventuel "de la baie" entre le sigle et la valeur est toléré.
-    (re.compile(r"Uw\s*(?:de la baie)?\s*(?:>=|>|=|≤|≥)?\s*([\d,.]+)(?:\s*W\s*/\s*m[²2]\.?\s*K)?", re.I), "Uw = {0} W/m².K"),
-    (re.compile(r"Sw\s*(?:de la baie)?\s*(?:>=|>|=|≤|≥)?\s*([\d,.]+)", re.I), "Sw = {0}"),
+    (re.compile(r"Uw\s*(?:de la baie)?\s*(?:<=|>=|<|>|=|≤|≥)?\s*([\d,.]+)(?:\s*W\s*/\s*m[²2]\.?\s*K)?", re.I), "Uw = {0} W/m².K"),
+    (re.compile(r"Sw\s*(?:de la baie)?\s*(?:<=|>=|<|>|=|≤|≥)?\s*([\d,.]+)", re.I), "Sw = {0}"),
     (re.compile(r"[ée]paisseur[^\n.]{0,20}?([\d,.]+)\s*(mm|cm)", re.I), "Épaisseur {0}{1}"),
     (re.compile(r"contenance[^\n.]{0,20}?([\d,.]+)\s*L\b", re.I), "Ballon {0}L"),
     (re.compile(r"Ud\s*=?\s*([\d,.]+)\s*W\s*/\s*m[²2]\.?\s*K", re.I), "Ud = {0} W/m².K"),
