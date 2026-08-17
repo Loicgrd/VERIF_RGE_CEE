@@ -237,10 +237,10 @@ for tab, sc in zip(tabs, scenarios):
                 wb = openpyxl.load_workbook(TEMPLATE_PATH)
                 ws = wb.active
 
-                ws["B4"] = batiment.beneficiaire or ""
-                ws["E4"] = sc.nom.replace("\n", " ")
-                ws["B5"] = batiment.adresse or ""
-                ws["E5"] = date.today().strftime("%d/%m/%Y")
+                ws["C4"] = batiment.beneficiaire or ""
+                ws["F4"] = sc.nom.replace("\n", " ")
+                ws["C5"] = batiment.adresse or ""
+                ws["F5"] = date.today().strftime("%d/%m/%Y")
 
                 all_travaux = []
                 for e in sc.etapes:
