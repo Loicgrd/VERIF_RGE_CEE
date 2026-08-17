@@ -89,15 +89,19 @@ if not scenarios:
 # ---------------------------------------------------------------------------
 
 st.header("📋 Bâtiment")
+# Clé de widget dérivée du fichier déposé : force Streamlit à réinitialiser les
+# champs (au lieu de garder en mémoire les valeurs d'un fichier précédent) dès
+# qu'un nouveau PDF est chargé dans la même session.
+fkey = f"{uploaded.name}_{uploaded.size}"
 c1, c2 = st.columns(2)
 with c1:
-    batiment.adresse = st.text_input("Adresse", batiment.adresse or "")
-    batiment.beneficiaire = st.text_input("Bénéficiaire / Propriétaire", batiment.beneficiaire or "")
-    batiment.surface_m2 = st.number_input("Surface de référence (m²)", value=float(batiment.surface_m2 or 0), step=1.0)
+    batiment.adresse = st.text_input("Adresse", batiment.adresse or "", key=f"adresse_{fkey}")
+    batiment.beneficiaire = st.text_input("Bénéficiaire / Propriétaire", batiment.beneficiaire or "", key=f"benef_{fkey}")
+    batiment.surface_m2 = st.number_input("Surface de référence (m²)", value=float(batiment.surface_m2 or 0), step=1.0, key=f"surface_{fkey}")
 with c2:
-    batiment.cep_initial = st.number_input("CEP initial (kWhEP/m²/an)", value=float(batiment.cep_initial or 0), step=1.0)
-    batiment.cef_initial = st.number_input("CEF initial (kWhEF/m²/an)", value=float(batiment.cef_initial or 0), step=1.0)
-    batiment.etiquette_initiale = st.text_input("Étiquette initiale (A-G)", batiment.etiquette_initiale or "")
+    batiment.cep_initial = st.number_input("CEP initial (kWhEP/m²/an)", value=float(batiment.cep_initial or 0), step=1.0, key=f"cepi_{fkey}")
+    batiment.cef_initial = st.number_input("CEF initial (kWhEF/m²/an)", value=float(batiment.cef_initial or 0), step=1.0, key=f"cefi_{fkey}")
+    batiment.etiquette_initiale = st.text_input("Étiquette initiale (A-G)", batiment.etiquette_initiale or "", key=f"etqi_{fkey}")
 
 st.divider()
 
@@ -178,16 +182,16 @@ for tab, sc in zip(tabs, scenarios):
                 st.markdown(f"**{e.libelle}**")
                 m1, m2, m3, m4 = st.columns(4)
                 e.cep_apres = m1.number_input(
-                    "CEP après", value=float(e.cep_apres or 0), step=1.0, key=f"cep_{sc.id}_{ei}"
+                    "CEP après", value=float(e.cep_apres or 0), step=1.0, key=f"cep_{fkey}_{sc.id}_{ei}"
                 )
                 e.cef_apres = m2.number_input(
-                    "CEF après", value=float(e.cef_apres or 0), step=1.0, key=f"cef_{sc.id}_{ei}"
+                    "CEF après", value=float(e.cef_apres or 0), step=1.0, key=f"cef_{fkey}_{sc.id}_{ei}"
                 )
                 e.etiquette_apres = m3.text_input(
-                    "Étiquette après", e.etiquette_apres or "", key=f"lbl_{sc.id}_{ei}"
+                    "Étiquette après", e.etiquette_apres or "", key=f"lbl_{fkey}_{sc.id}_{ei}"
                 )
                 e.economie_pct = m4.number_input(
-                    "Économie %", value=float(e.economie_pct or 0), step=1.0, key=f"eco_{sc.id}_{ei}"
+                    "Économie %", value=float(e.economie_pct or 0), step=1.0, key=f"eco_{fkey}_{sc.id}_{ei}"
                 )
 
                 st.markdown("_Travaux détectés (modifiable) :_")
@@ -204,7 +208,7 @@ for tab, sc in zip(tabs, scenarios):
                     num_rows="dynamic",
                     use_container_width=True,
                     hide_index=True,
-                    key=f"travaux_{sc.id}_{ei}",
+                    key=f"travaux_{fkey}_{sc.id}_{ei}",
                 )
                 e.travaux = [
                     Travail(
