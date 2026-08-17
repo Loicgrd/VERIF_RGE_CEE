@@ -68,11 +68,11 @@ def _bytes_io(b: bytes):
 # Regex génériques
 # ---------------------------------------------------------------------------
 
-RE_ADRESSE = re.compile(r"Adresse\s*:\s*(.+?)(?:\n\s*\n|\nType de bien|\nPropri)", re.S)
-RE_BENEFICIAIRE = re.compile(r"(?:Propri[ée]taire|Commanditaire)\s*:\s*(.+)")
-RE_SURFACE = re.compile(r"Surface de r[ée]f[ée]rence\s*:\s*([\d\s.,]+)\s*m")
-RE_NB_LOGEMENTS = re.compile(r"Nombre de logements\s*:?\s*(\d+)")
-RE_DATE_VISITE = re.compile(r"Date de visite\s*:?\s*(\d{2}/\d{2}/\d{4})")
+RE_ADRESSE = re.compile(r"Adresse\s*:\s*(.+?)(?:\n\s*\n|\nType de bien|\nPropri)", re.S | re.I)
+RE_BENEFICIAIRE = re.compile(r"(?:Propri[ée]taire|Commanditaire)\s*:\s*(.+)", re.I)
+RE_SURFACE = re.compile(r"Surface de r[ée]f[ée]rence\s*:\s*([\d\s.,]+)\s*m", re.I)
+RE_NB_LOGEMENTS = re.compile(r"Nombre de logements?\s*:?\s*(\d+)", re.I)
+RE_DATE_VISITE = re.compile(r"Date de visite\s*:?\s*(\d{2}/\d{2}/\d{4})", re.I)
 
 # Total EP/EF — deux mises en forme rencontrées selon le logiciel d'audit :
 #   LICIEL   : "(kWh/m²/an)" puis "222  (96 )" puis "EP EF" sur la ligne suivante
@@ -136,11 +136,14 @@ def find_total_ep_ef(block: str) -> tuple[str, str] | None:
     # la plus grande parmi les candidats (les postes ne peuvent excéder le total).
     return max(candidates, key=lambda c: _num(c[0]) or 0)
 
-# Deux formats rencontrés :
-#  - "Scénario 1 « rénovation en une fois »" (numéroté)
-#  - "Scénario de travaux en une étape «rénovation en une fois»" (non numéroté)
+# Formats rencontrés :
+#  - "Scénario 1 « rénovation en une fois »" (numéroté, guillemets français — LICIEL)
+#  - "Scénario de travaux en une étape «rénovation en une fois»" (non numéroté — Climawin)
+#  - "Scénario 1 "rénovation en une fois"" (numéroté, guillemets droits — Pleiades)
+# Les deux styles de guillemets sont couverts via une classe de caractères pour
+# l'ouvrant et une pour le fermant, plutôt que les caractères littéraux « ».
 RE_SCENARIO_HEADER = re.compile(
-    r"Sc[ée]nario\s*(\d)?\s*(?:de travaux\s*(?:en\s+(?:une|plusieurs)\s+[ée]tapes?)?)?\s*«\s*([^»]+)\s*»",
+    r"Sc[ée]nario\s*(\d)?\s*(?:de travaux\s*(?:en\s+(?:une|plusieurs)\s+[ée]tapes?)?)?\s*[«\"\u201c]\s*([^»\"\u201d]+?)\s*[»\"\u201d]",
     re.I,
 )
 RE_ETAPE_HEADER = re.compile(
@@ -169,8 +172,15 @@ POSTE_KEYWORDS = [
     ("Ventilation", "Ventilation"),
     ("Syst[èe]me de chauffage", "Chauffage"),
     ("Chauffage", "Chauffage"),
+    # Pleiades intitule ce poste "Système d'ecs" (minuscule) plutôt que "ECS" : motif
+    # dédié, gardé avant le motif générique "ECS".
+    ("Syst[èe]me d['’]?ecs", "Eau chaude sanitaire"),
     ("ECS", "Eau chaude sanitaire"),
 ]
+# Volontairement sensible à la casse (pas de re.I) : les vrais en-têtes de poste
+# commencent par une majuscule ("Murs", "Planchers bas", "Système d'ecs"...), ce qui
+# évite de confondre avec un mot de fin de phrase renvoyé seul à la ligne par la
+# reconstruction x/y (ex. "...tableaux et linteaux des\nmenuiseries" en minuscule).
 RE_POSTE_HEADER = re.compile(
     r"^((?:" + "|".join(p for p, _ in POSTE_KEYWORDS) + r")[^\n]*)$",
     re.M,
@@ -202,9 +212,12 @@ def cep_to_etiquette(cep: float | None) -> str | None:
 SPEC_SPECS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"(?:R\s*(?:>=|>|=|≥)|[Rr]ésistance\s+thermique[^\n.]{0,40}?(?:>=|>|=|≥))\s*([\d,.]+)\s*m[²2]\.?\s*K\s*/\s*W"), "R ≥ {0} m².K/W"),
     (re.compile(r"Th\s*(\d+)(?:\s+(\d+)\s*mm)?", re.I), None),  # géré à part (2 groupes optionnels)
-    (re.compile(r"SCOP\s*(?:>=|>|=)?\s*([\d,.]+)", re.I), "SCOP ≥ {0}"),
-    (re.compile(r"Uw?\s*(?:>=|>|=|≥)?\s*([\d,.]+)\s*W\s*/\s*m[²2]\.?\s*K", re.I), "Uw = {0} W/m².K"),
-    (re.compile(r"Sw\s*(?:>=|>|=)?\s*([\d,.]+)", re.I), "Sw = {0}"),
+    (re.compile(r"S?COP\s*(?:du\s+[^\n.]{0,40}?)?\s*(?:>=|>|=|≥|≤)?\s*([\d,.]+)", re.I), "COP ≥ {0}"),
+    # Uw/Sw sont parfois donnés sans unité explicite (ex. Pleiades : "Uw de la baie ≤ 1.3")
+    # plutôt qu'avec "W/m².K" accolé (ex. LICIEL : "Uw ≤ 1.3 W/m².K") : l'unité est rendue
+    # optionnelle et un éventuel "de la baie" entre le sigle et la valeur est toléré.
+    (re.compile(r"Uw\s*(?:de la baie)?\s*(?:>=|>|=|≤|≥)?\s*([\d,.]+)(?:\s*W\s*/\s*m[²2]\.?\s*K)?", re.I), "Uw = {0} W/m².K"),
+    (re.compile(r"Sw\s*(?:de la baie)?\s*(?:>=|>|=|≤|≥)?\s*([\d,.]+)", re.I), "Sw = {0}"),
     (re.compile(r"[ée]paisseur[^\n.]{0,20}?([\d,.]+)\s*(mm|cm)", re.I), "Épaisseur {0}{1}"),
     (re.compile(r"contenance[^\n.]{0,20}?([\d,.]+)\s*L\b", re.I), "Ballon {0}L"),
     (re.compile(r"Ud\s*=?\s*([\d,.]+)\s*W\s*/\s*m[²2]\.?\s*K", re.I), "Ud = {0} W/m².K"),
