@@ -81,17 +81,60 @@ RE_TOTAL_EP_EF_LICIEL = re.compile(
     r"\(\s*kWh\s*/\s*m[²2]\s*/\s*an\s*\)\s*\n(?:[^\n]*\n){0,3}?\s*(\d[\d\s]*)\s*\(\s*(\d[\d\s]*)\s*\)\s*\n\s*EP\s*EF",
     re.I,
 )
-RE_TOTAL_EP_EF_CLIMAWIN = re.compile(
-    r"(\d[\d\s]*)\s*ep\s*\n\s*\(\s*(\d[\d\s]*)\s*ef\s*\)",
-    re.I,
-)
+# La ligne "Total" de Climawin est en réalité scindée par le texte "sans déduction
+# photovoltaïque autoconsommée" une fois le PDF reconstruit (les deux valeurs
+# ep/ef du total encadrent ce texte plutôt que de se suivre directement) :
+#   "Consommation d'énergie\n214 ep\nsans déduction photovol\n(202 ef)\ntaïque autoconsommée"
+RE_TOTAL_MARKER_CLIMAWIN = re.compile(r"sans\s+d[ée]duction", re.I)
 
 
-def find_total_ep_ef(block: str):
+def _find_total_climawin(block: str):
+    marker = RE_TOTAL_MARKER_CLIMAWIN.search(block)
+    if not marker:
+        return None
+    pre = block[max(0, marker.start() - 30) : marker.start()]
+    post = block[marker.end() : marker.end() + 60]
+    m_ep = re.search(r"(\d[\d\s]*)\s*ep\s*$", pre, re.I)
+    m_ef = re.search(r"\(\s*(\d[\d\s]*)\s*ef\s*\)", post, re.I)
+    if m_ep and m_ef:
+        return m_ep.group(1), m_ef.group(1)
+    return None
+
+
+RE_ANY_EP = re.compile(r"(\d[\d\s]*)\s*ep\b", re.I)
+RE_ANY_EF = re.compile(r"\(\s*(\d[\d\s]*)\s*ef\s*\)", re.I)
+
+
+def _find_total_by_max(block: str, window: int = 1500) -> tuple[str, str] | None:
+    """Filet de sécurité, indépendant du logiciel d'audit : dans le tableau des
+    consommations, le total est par construction toujours la plus grande valeur
+    EP (somme de tous les postes) — et de même pour l'EF."""
+    zone = block[:window]
+    eps = RE_ANY_EP.findall(zone)
+    efs = RE_ANY_EF.findall(zone)
+    if not eps or not efs:
+        return None
+    best_ep = max(eps, key=lambda s: _num(s) or 0)
+    best_ef = max(efs, key=lambda s: _num(s) or 0)
+    return best_ep, best_ef
+
+
+def find_total_ep_ef(block: str) -> tuple[str, str] | None:
+    candidates = []
     m = RE_TOTAL_EP_EF_LICIEL.search(block)
     if m:
-        return m
-    return RE_TOTAL_EP_EF_CLIMAWIN.search(block)
+        candidates.append((m.group(1), m.group(2)))
+    c = _find_total_climawin(block)
+    if c:
+        candidates.append(c)
+    c = _find_total_by_max(block)
+    if c:
+        candidates.append(c)
+    if not candidates:
+        return None
+    # Sécurité : quelle que soit la méthode, le total est toujours la valeur EP
+    # la plus grande parmi les candidats (les postes ne peuvent excéder le total).
+    return max(candidates, key=lambda c: _num(c[0]) or 0)
 
 # Deux formats rencontrés :
 #  - "Scénario 1 « rénovation en une fois »" (numéroté)
@@ -311,11 +354,13 @@ def parse_batiment(text: str) -> Batiment:
 
     # premier total EP/EF rencontré dans le document (page "Montants et consommations
     # annuels d'énergie") = état initial
-    idx = text.lower().find("ontants et consommations annuels d")
-    m = find_total_ep_ef(text[idx:] if idx != -1 else text)
-    if m:
-        b.cep_initial = _num(m.group(1))
-        b.cef_initial = _num(m.group(2))
+    idx = text.lower().find("ontant et consommations annuels d")
+    if idx == -1:
+        idx = text.lower().find("ontants et consommations annuels d")
+    ep_ef = find_total_ep_ef(text[idx : idx + 2000] if idx != -1 else text[:3000])
+    if ep_ef:
+        b.cep_initial = _num(ep_ef[0])
+        b.cef_initial = _num(ep_ef[1])
 
     # étiquette : lettre explicite si trouvée, sinon calculée depuis le CEP
     m = RE_LETTRE_EXPLICITE.search(text[: idx if idx != -1 else 3000])
@@ -430,10 +475,10 @@ def _parse_etape(libelle: str, block: str) -> Etape:
     if m:
         e.economie_pct = _num(m.group(1))
 
-    m = find_total_ep_ef(window)
-    if m:
-        e.cep_apres = _num(m.group(1))
-        e.cef_apres = _num(m.group(2))
+    ep_ef = find_total_ep_ef(window)
+    if ep_ef:
+        e.cep_apres = _num(ep_ef[0])
+        e.cef_apres = _num(ep_ef[1])
 
     m = RE_LETTRE_EXPLICITE.search(block)
     e.etiquette_apres = m.group(1) if m else cep_to_etiquette(e.cep_apres)
