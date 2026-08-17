@@ -122,6 +122,7 @@ TRAVAUX_TYPES = [
 data = {}
 for sc in scenarios:
     derniere = sc.etapes[-1]  # état final du scénario (après toutes ses étapes)
+    multi_etapes = len(sc.etapes) > 1
     col_label = sc.nom.replace("\n", " ")
     col = {
         "Étape(s)": " → ".join(e.libelle for e in sc.etapes),
@@ -134,8 +135,17 @@ for sc in scenarios:
         "Économie": f"{derniere.economie_pct}%" if derniere.economie_pct is not None else "—",
     }
     for label, postes in TRAVAUX_TYPES:
-        present = any(t.poste in postes for e in sc.etapes for t in e.travaux)
-        col[label] = "✅" if present else "❌"
+        # étapes (1-indexées) où ce type de travaux apparaît
+        etapes_concernees = [
+            i for i, e in enumerate(sc.etapes, start=1)
+            if any(t.poste in postes for t in e.travaux)
+        ]
+        if not etapes_concernees:
+            col[label] = "❌"
+        elif multi_etapes:
+            col[label] = "✅ (Étape " + ", ".join(str(i) for i in etapes_concernees) + ")"
+        else:
+            col[label] = "✅"
     data[col_label] = col
 
 try:
