@@ -104,7 +104,6 @@ RE_ETAPE_HEADER = re.compile(
     r"^(Premi[èe]re|Deuxi[èe]me|Derni[èe]re|Seule)\s+[ée]tape", re.I | re.M
 )
 RE_PCT_ECONOMIE = re.compile(r"-\s*(\d{1,3})\s*%")
-RE_COUT = re.compile(r"≈?\s*([\d][\d\s]{1,9})\s*€")
 RE_LETTRE_EXPLICITE = re.compile(r"lettre\s+([A-G])\b")
 
 # Un même titre de scénario apparaît plusieurs fois dans un audit (sommaire p.1, tableau
@@ -250,7 +249,6 @@ class Travail:
     caracteristiques: str      # ex. "R >= 4,4 m².K/W ; Th35 130 mm"
     quantite: str              # ex. "173.35 m²"
     description: str = ""      # texte brut complet (référence / debug)
-    cout_ttc: float | None = None
 
     @property
     def nature_affichee(self) -> str:
@@ -267,7 +265,6 @@ class Etape:
     cef_apres: float | None = None
     economie_pct: float | None = None
     etiquette_apres: str | None = None
-    cout_travaux_ttc: float | None = None
     travaux: list[Travail] = field(default_factory=list)
 
 
@@ -276,11 +273,6 @@ class Scenario:
     id: str
     nom: str
     etapes: list[Etape] = field(default_factory=list)
-
-    @property
-    def cout_total(self) -> float | None:
-        couts = [e.cout_travaux_ttc for e in self.etapes if e.cout_travaux_ttc]
-        return sum(couts) if couts else None
 
 
 @dataclass
@@ -351,8 +343,6 @@ def parse_travaux_block(block: str) -> list[Travail]:
                 poste_label = label
                 break
 
-        couts = RE_COUT.findall(chunk)
-        cout = _num(couts[-1]) if couts else None
         description = re.sub(r"\s+", " ", chunk).strip()
 
         travaux.append(
@@ -362,7 +352,6 @@ def parse_travaux_block(block: str) -> list[Travail]:
                 caracteristiques=_extract_specs(description),
                 quantite=_extract_quantite(description),
                 description=description[:600],
-                cout_ttc=cout,
             )
         )
     return travaux
@@ -448,10 +437,6 @@ def _parse_etape(libelle: str, block: str) -> Etape:
 
     m = RE_LETTRE_EXPLICITE.search(block)
     e.etiquette_apres = m.group(1) if m else cep_to_etiquette(e.cep_apres)
-
-    couts = RE_COUT.findall(window)
-    if couts:
-        e.cout_travaux_ttc = _num(couts[-1])
 
     # détail des postes de travaux
     det_start = block.find("Détail des travaux énergétiques")
