@@ -128,6 +128,16 @@ def fetch_gouv_data(siret_cible):
 
             # On isole l'agence scannée par l'utilisateur
             agence_cible = next((a for a in toutes_agences if a.get('siret') == siret_cible), None)
+
+            # --- DEBUG TEMPORAIRE ---
+            st.write("🔧 DEBUG siret_cible:", repr(siret_cible), "len:", len(siret_cible))
+            st.write("🔧 DEBUG siren calculé:", repr(siren))
+            st.write("🔧 DEBUG nom_exact:", repr(nom_exact))
+            st.write("🔧 DEBUG r1 status:", r1.status_code, "nb résultats étape 1:", len(results1))
+            st.write("🔧 DEBUG r2 status:", r2.status_code)
+            st.write("🔧 DEBUG sirets dans toutes_agences:", [repr(a.get('siret')) for a in toutes_agences])
+            st.write("🔧 DEBUG agence_cible trouvée:", agence_cible is not None)
+            # --- FIN DEBUG ---
             
             # NOUVEAU : Si l'agence cible n'existe pas, on lève un drapeau d'erreur
             if not agence_cible:
