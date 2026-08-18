@@ -107,18 +107,24 @@ def fetch_gouv_data(siret_cible):
             url_nom = f"https://recherche-entreprises.api.gouv.fr/search?q={urllib.parse.quote(nom_exact)}"
             r2 = requests.get(url_nom, timeout=4)
             
-            toutes_agences = []
+            # Base garantie et complète : la liste de l'ÉTAPE 1 (recherche directe par SIREN).
+            # La recherche par nom (texte libre) peut renvoyer une liste 'matching_etablissements'
+            # filtrée par pertinence, qui peut omettre l'établissement recherché même si
+            # l'entreprise correspond bien par SIREN. On FUSIONNE donc au lieu de remplacer,
+            # pour ne jamais perdre un établissement pourtant bien référencé.
+            toutes_agences = list(entreprise_mere.get('matching_etablissements', []))
+            sirets_connus = {a.get('siret') for a in toutes_agences}
+
             if r2.status_code == 200:
                 data2 = r2.json()
                 for ent in data2.get('results', []):
                     # Le croisement décisif :
                     if ent.get('siren') == siren:
-                        toutes_agences = ent.get('matching_etablissements', [])
+                        for a in ent.get('matching_etablissements', []):
+                            if a.get('siret') not in sirets_connus:
+                                toutes_agences.append(a)
+                                sirets_connus.add(a.get('siret'))
                         break
-                        
-            # Sécurité : si l'astuce échoue, on garde au moins ce qu'on avait à l'étape 1
-            if not toutes_agences:
-                toutes_agences = entreprise_mere.get('matching_etablissements', [])
 
             # On isole l'agence scannée par l'utilisateur
             agence_cible = next((a for a in toutes_agences if a.get('siret') == siret_cible), None)
