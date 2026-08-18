@@ -162,5 +162,7 @@ def fetch_gouv_data(siret_cible):
                 "commune": agence_cible.get('libelle_commune', '') if agence_cible else '',
                 "autres_agences": autres_agences # La nouveauté est ici !
             }
+    except Exception as e:
+        print(f"DEBUG: Erreur API Gouv pour {siret_cible}: {e}")
     
     return {"trouve": False}
