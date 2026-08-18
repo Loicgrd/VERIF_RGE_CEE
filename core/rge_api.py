@@ -108,12 +108,18 @@ def fetch_gouv_data(siret_cible):
             r2 = requests.get(url_nom, timeout=4)
             
             # Base garantie et complète : la liste de l'ÉTAPE 1 (recherche directe par SIREN).
-            # La recherche par nom (texte libre) peut renvoyer une liste 'matching_etablissements'
-            # filtrée par pertinence, qui peut omettre l'établissement recherché même si
-            # l'entreprise correspond bien par SIREN. On FUSIONNE donc au lieu de remplacer,
-            # pour ne jamais perdre un établissement pourtant bien référencé.
+            # ⚠️ 'matching_etablissements' liste les établissements qui correspondent à la
+            # recherche TEXTUELLE — sur une requête purement numérique (le SIREN), ce champ peut
+            # rester VIDE même pour une société mono-établissement. Le siège, lui, est TOUJOURS
+            # présent séparément dans le champ 'siege'. On l'ajoute donc systématiquement comme
+            # candidat garanti, en plus de 'matching_etablissements'.
             toutes_agences = list(entreprise_mere.get('matching_etablissements', []))
             sirets_connus = {a.get('siret') for a in toutes_agences}
+
+            siege = entreprise_mere.get('siege')
+            if siege and siege.get('siret') not in sirets_connus:
+                toutes_agences.append(siege)
+                sirets_connus.add(siege.get('siret'))
 
             if r2.status_code == 200:
                 data2 = r2.json()
@@ -124,6 +130,10 @@ def fetch_gouv_data(siret_cible):
                             if a.get('siret') not in sirets_connus:
                                 toutes_agences.append(a)
                                 sirets_connus.add(a.get('siret'))
+                        siege2 = ent.get('siege')
+                        if siege2 and siege2.get('siret') not in sirets_connus:
+                            toutes_agences.append(siege2)
+                            sirets_connus.add(siege2.get('siret'))
                         break
 
             # On isole l'agence scannée par l'utilisateur
@@ -152,7 +162,5 @@ def fetch_gouv_data(siret_cible):
                 "commune": agence_cible.get('libelle_commune', '') if agence_cible else '',
                 "autres_agences": autres_agences # La nouveauté est ici !
             }
-    except Exception as e:
-        print(f"DEBUG: Erreur API Gouv pour {siret_cible}: {e}")
     
     return {"trouve": False}
