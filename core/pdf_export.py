@@ -30,7 +30,8 @@ COL_HILITE = colors.HexColor("#E2EFDA")
 COL_HILITE_BORDER = colors.HexColor("#548235")
 COL_ROW_ALT = colors.HexColor("#F2F2F2")
 COL_BORDER = colors.HexColor("#BFBFBF")
-COL_FIELD_BG = colors.HexColor("#FFF8E1")  # fond légèrement teinté = "à remplir"
+COL_FIELD_BG = colors.HexColor("#FFF8E1")  # "réalisés" — fond jaune pâle = à compléter chantier
+COL_FIELD_BG_PRECO = colors.HexColor("#EAF2FB")  # "préconisés" — fond bleu pâle = repris de l'audit, éditable
 
 
 _CHAR_REPLACEMENTS = {
@@ -59,6 +60,34 @@ def _clean(text: str | None) -> str:
     # Filet de sécurité : tout caractère encore hors Latin-1 (accents exotiques,
     # symboles, emoji...) est remplacé plutôt que de faire planter la génération.
     return s.encode("latin-1", errors="replace").decode("latin-1")
+
+
+def _required_lines(text: str, font: str, size: float, max_width: float) -> int:
+    """Nombre de lignes nécessaires pour afficher tout le texte sans coupe."""
+    return len(_wrap_text(None, text, font, size, max_width))
+
+
+def _fit_font_and_lines(texts: list[str], widths: list[float],
+                         font: str = "Helvetica",
+                         candidate_sizes: tuple[float, ...] = (7.5, 7, 6.5, 6, 5.5, 5),
+                         target_max_lines: int = 6) -> tuple[float, int]:
+    """Choisit la plus grande taille de police (parmi candidate_sizes) qui fait
+    tenir tout le texte de la ligne en <= target_max_lines lignes sur AU MOINS
+    une des tailles ; sinon retombe sur la plus petite taille et accepte le
+    nombre de lignes réel (le texte ne sera alors jamais coupé, la cellule
+    grandit en conséquence)."""
+    best = None
+    for size in candidate_sizes:
+        leading = size + 1.3
+        n = max((_required_lines(t, font, size, w) for t, w in zip(texts, widths)), default=1)
+        n = max(n, 1)
+        if best is None:
+            best = (size, n, leading)
+        if n <= target_max_lines:
+            return size, n
+    # Rien ne tient dans la cible : on garde la plus petite taille testée et
+    # son nombre de lignes réel (aucune troncature).
+    return best[0], best[1]
 
 
 def _wrap_text(c: canvas.Canvas, text: str, font: str, size: float, max_width: float) -> list[str]:
@@ -212,19 +241,27 @@ def draw_summary_page(c: canvas.Canvas, batiment, scenarios, scenario_choisi_id:
 # ---------------------------------------------------------------------------
 
 def _field(c: canvas.Canvas, name: str, x: float, y: float, w: float, h: float,
-           value: str = "", font_size: int = 8, multiline: bool = False, tooltip: str = ""):
+           value: str = "", font_size: int = 8, multiline: bool = False, tooltip: str = "",
+           fill_color=None, wrap_width: float | None = None):
+    """wrap_width : si fourni (et multiline=True), le texte est pré-découpé en
+    lignes (\\n) à cette largeur avant d'être injecté dans le champ, car
+    l'appareance figée d'un champ AcroForm ne fait PAS de retour à la ligne
+    automatique — seuls les \\n explicites créent une nouvelle ligne."""
     form = c.acroForm
+    clean_value = _clean(value)
+    if multiline and wrap_width:
+        clean_value = "\n".join(_wrap_text(None, clean_value, "Helvetica", font_size, wrap_width))
     form.textfield(
         name=name,
         tooltip=_clean(tooltip or name),
         x=x, y=y, width=w, height=h,
-        value=_clean(value),
+        value=clean_value,
         fontName="Helvetica",
         fontSize=font_size,
         borderStyle="underlined",
         borderColor=colors.HexColor("#9E9E9E"),
         borderWidth=0.6,
-        fillColor=COL_FIELD_BG,
+        fillColor=fill_color if fill_color is not None else COL_FIELD_BG,
         textColor=colors.HexColor("#1F1F1F"),
         forceBorder=True,
         fieldFlags="multiline" if multiline else "",
@@ -271,65 +308,133 @@ def draw_fiche_page(c: canvas.Canvas, batiment, scenario, all_travaux: list[dict
     c.drawString(left + 68, top - 46, _clean(batiment.adresse or ""))
     c.drawString(left + width / 2 + 40, top - 46, date.today().strftime("%d/%m/%Y"))
 
-    # --- Tableau des travaux (préconisés = texte figé issu de l'audit ;
-    #     réalisés = champs remplissables, pré-remplis avec les mêmes valeurs
-    #     par défaut, à ajuster après chantier) ---
-    table_top = top - 62
-    row_h = 34
-    header_h = 14
+    BOTTOM_MARGIN = MARGIN + 4
+
+    def _new_page_reset():
+        c.showPage()
+        return PAGE_H - MARGIN
+
+    # --- Tableau des travaux : préconisés ET réalisés sont tous deux des champs
+    #     de formulaire éditables. Les "préconisés" sont pré-remplis avec les
+    #     données extraites de l'audit (fond bleu pâle) ; les "réalisés" sont
+    #     pré-remplis à l'identique par défaut mais à ajuster après chantier
+    #     (fond jaune pâle). La hauteur de chaque ligne s'adapte à la longueur
+    #     du texte (aucune coupe) ; le tableau passe à la page suivante si besoin.
     col_nat_w = width * 0.24
     col_carac_w = width * 0.20
     col_qte_w = width * 0.09
     half = col_nat_w + col_carac_w + col_qte_w  # largeur d'un demi-tableau (préco / réalisé)
-
-    _section_header(c, "Travaux préconisés", left, table_top - header_h, half)
-    _section_header(c, "Travaux réalisés", left + half, table_top - header_h, half)
-
-    headers = ["Nature des travaux", "Caractéristiques techniques / Marque et référence", "Surface / Quantités"]
     col_widths = [col_nat_w, col_carac_w, col_qte_w]
+    headers = ["Nature des travaux", "Caractéristiques techniques / Marque et référence", "Surface / Quantités"]
+    section_bar_h = 14
+    subheader_h = 12
 
-    y = table_top - header_h
+    def _draw_travaux_header(y_top: float) -> float:
+        _section_header(c, "Travaux préconisés", left, y_top - section_bar_h, half)
+        _section_header(c, "Travaux réalisés", left + half, y_top - section_bar_h, half)
+        sub_y = y_top - section_bar_h - subheader_h
+        c.setFillColor(colors.HexColor("#EDEDED"))
+        c.rect(left, sub_y, half * 2, subheader_h, fill=1, stroke=0)
+        c.setFont("Helvetica-Bold", 6.8)
+        c.setFillColor(colors.HexColor("#1F1F1F"))
+        for _side0, x0 in ((0, left), (1, left + half)):
+            x = x0
+            for ci, cw in enumerate(col_widths):
+                c.drawString(x + 3, sub_y + 3, _clean(headers[ci]))
+                c.setStrokeColor(COL_BORDER)
+                c.setLineWidth(0.4)
+                c.line(x, sub_y, x, sub_y + subheader_h)
+                x += cw
+        return sub_y
+
+    y = _draw_travaux_header(top - 62)
+
     max_rows = max(len(all_travaux), 6)
-    for ridx in range(max_rows):
-        row_top = y
-        row_bottom = y - row_h
-        t = all_travaux[ridx] if ridx < len(all_travaux) else {"nature": "", "carac": "", "quantite": ""}
+    cell_pad = 6  # marge haut+bas du texte dans la cellule
+    text_pad = 8  # marge gauche+droite pour le calcul du retour à la ligne
+    min_row_h = 26
 
+    for ridx in range(max_rows):
+        t = all_travaux[ridx] if ridx < len(all_travaux) else {"nature": "", "carac": "", "quantite": ""}
+        texts = [t["nature"], t["carac"], t["quantite"]]
+        cell_widths = [cw - text_pad for cw in col_widths]
+
+        # Taille de police / hauteur de ligne calculées pour que le texte
+        # de la ligne la plus longue tienne intégralement, sans coupe.
+        font_size, n_lines = _fit_font_and_lines(texts, cell_widths)
+        row_h = max(min_row_h, n_lines * (font_size + 1.3) + cell_pad)
+
+        # Saut de page si la ligne ne tient plus
+        if y - row_h < BOTTOM_MARGIN:
+            y = _new_page_reset()
+            y = _draw_travaux_header(y)
+
+        row_bottom = y - row_h
         for side, x0 in ((0, left), (1, left + half)):
             x = x0
             for ci, cw in enumerate(col_widths):
                 c.setStrokeColor(COL_BORDER)
                 c.setLineWidth(0.4)
                 c.rect(x, row_bottom, cw, row_h, fill=0, stroke=1)
+                val = texts[ci]
                 if side == 0:
-                    # Préconisé : texte figé (donnée de l'audit, non modifiable)
-                    val = [t["nature"], t["carac"], t["quantite"]][ci]
-                    _draw_wrapped(c, val, x + 3, row_top - 10, cw - 6, "Helvetica", 7.5, 8.8, 4)
-                else:
-                    # Réalisé : champ de formulaire pré-rempli, modifiable
-                    fname = f"{field_prefix}_realise_{ridx}_{ci}"
-                    val = [t["nature"], t["carac"], t["quantite"]][ci]
+                    fname = f"{field_prefix}_preco_{ridx}_{ci}"
                     _field(c, fname, x + 2, row_bottom + 2, cw - 4, row_h - 4,
-                           value=val, font_size=7.5, multiline=True,
-                           tooltip=f"{headers[ci]} — travaux réalisés")
+                           value=val, font_size=font_size, multiline=True,
+                           tooltip=f"{headers[ci]} (travaux préconisés)",
+                           fill_color=COL_FIELD_BG_PRECO, wrap_width=cw - text_pad)
+                else:
+                    fname = f"{field_prefix}_realise_{ridx}_{ci}"
+                    _field(c, fname, x + 2, row_bottom + 2, cw - 4, row_h - 4,
+                           value=val, font_size=font_size, multiline=True,
+                           tooltip=f"{headers[ci]} (travaux réalisés)",
+                           fill_color=COL_FIELD_BG, wrap_width=cw - text_pad)
                 x += cw
         y -= row_h
 
     table_bottom = y
 
     # --- Tableau des entreprises (100% remplissable) ---
-    ent_top = table_bottom - 22
-    _section_header(c, "LISTE DES ENTREPRISES", left, ent_top - header_h, width)
+    ent_section_h = 14
+    ent_subheader_h = 12
     ent_headers = ["Nature des travaux", "Entreprise (titulaire ou sous-traitant)", "SIRET entreprise", "N° de qualification"]
     ent_col_w = [width * 0.22, width * 0.38, width * 0.20, width * 0.20]
-    ey = ent_top - header_h
-    ent_row_h = 20
+    ent_row_h_min = 20
     n_ent_rows = 6
+    # hauteur adaptée si le libellé "Nature des travaux" (col. 0) est long
+    ent_row_heights = []
     for ridx in range(n_ent_rows):
-        row_top = ey
+        default_nat = all_travaux[ridx]["nature"] if ridx < len(all_travaux) else ""
+        fs, n_lines = _fit_font_and_lines([default_nat], [ent_col_w[0] - text_pad], target_max_lines=3)
+        ent_row_heights.append(max(ent_row_h_min, n_lines * (fs + 1.3) + cell_pad))
+    ent_block_h = ent_section_h + ent_subheader_h + sum(ent_row_heights)
+
+    ent_top = table_bottom - 22
+    if ent_top - ent_block_h < BOTTOM_MARGIN:
+        ent_top = _new_page_reset()
+
+    def _draw_ent_header(y_top: float) -> float:
+        _section_header(c, "LISTE DES ENTREPRISES", left, y_top - ent_section_h, width)
+        sub_y = y_top - ent_section_h - ent_subheader_h
+        c.setFillColor(colors.HexColor("#EDEDED"))
+        c.rect(left, sub_y, width, ent_subheader_h, fill=1, stroke=0)
+        c.setFont("Helvetica-Bold", 6.8)
+        c.setFillColor(colors.HexColor("#1F1F1F"))
+        xh = left
+        for ci, cw in enumerate(ent_col_w):
+            c.drawString(xh + 3, sub_y + 3, _clean(ent_headers[ci]))
+            c.setStrokeColor(COL_BORDER)
+            c.setLineWidth(0.4)
+            c.line(xh, sub_y, xh, sub_y + ent_subheader_h)
+            xh += cw
+        return sub_y
+
+    ey = _draw_ent_header(ent_top)
+
+    for ridx in range(n_ent_rows):
+        ent_row_h = ent_row_heights[ridx]
         row_bottom = ey - ent_row_h
         x = left
-        # valeur par défaut de la 1re colonne = nature du travail correspondant si dispo
         default_nat = all_travaux[ridx]["nature"] if ridx < len(all_travaux) else ""
         for ci, cw in enumerate(ent_col_w):
             c.setStrokeColor(COL_BORDER)
@@ -338,13 +443,18 @@ def draw_fiche_page(c: canvas.Canvas, batiment, scenario, all_travaux: list[dict
             fname = f"{field_prefix}_entreprise_{ridx}_{ci}"
             val = default_nat if ci == 0 else ""
             _field(c, fname, x + 2, row_bottom + 2, cw - 4, ent_row_h - 4,
-                   value=val, font_size=7.5, tooltip=ent_headers[ci])
+                   value=val, font_size=7.5, tooltip=ent_headers[ci],
+                   multiline=(ci == 0), wrap_width=(ent_col_w[0] - text_pad) if ci == 0 else None)
             x += cw
         ey -= ent_row_h
 
     ent_bottom = ey
 
     # --- Signatures ---
+    sig_block_h = 66
+    if ent_bottom - sig_block_h < BOTTOM_MARGIN:
+        ent_bottom = _new_page_reset()
+
     sig_top = ent_bottom - 16
     c.setFont("Helvetica-Bold", 8.5)
     c.setFillColor(colors.HexColor("#1F1F1F"))
