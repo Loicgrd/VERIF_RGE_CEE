@@ -26,6 +26,7 @@ from pathlib import Path
 import streamlit as st
 
 from core.audit_parser import Travail, parse_audit_pdf
+from core.pdf_export import generate_pdf as generate_fiche_pdf
 
 TEMPLATE_PATH = (
     Path(__file__).resolve().parent.parent
@@ -222,7 +223,28 @@ for tab, sc in zip(tabs, scenarios):
                 ]
 
         st.markdown("")
-        if st.button(f"📥 Générer l'Excel pour « {sc.nom.strip()} »", key=f"gen_{sc.id}"):
+        colA, colB = st.columns(2)
+
+        with colA:
+            if st.button(f"📄 Générer le PDF à envoyer au bailleur", key=f"genpdf_{sc.id}"):
+                pdf_bytes = generate_fiche_pdf(batiment, scenarios, scenario_choisi_id=sc.id)
+                st.success(
+                    "PDF généré : page 1 = récapitulatif des scénarios (scénario "
+                    "retenu en évidence), page 2 = fiche des travaux et entreprises "
+                    "avec champs remplissables numériquement."
+                )
+                st.download_button(
+                    "⬇️ Télécharger le PDF",
+                    data=pdf_bytes,
+                    file_name=f"Fiche_travaux_{sc.id}.pdf",
+                    mime="application/pdf",
+                    key=f"dlpdf_{sc.id}",
+                )
+
+        with colB:
+            gen_excel = st.button(f"📥 Générer l'Excel pour « {sc.nom.strip()} »", key=f"gen_{sc.id}")
+
+        if gen_excel:
             if not TEMPLATE_PATH.exists():
                 st.error("Le gabarit Excel est introuvable, impossible de générer le fichier.")
             else:
