@@ -33,9 +33,37 @@ COL_BORDER = colors.HexColor("#BFBFBF")
 COL_FIELD_BG = colors.HexColor("#FFF8E1")  # fond légèrement teinté = "à remplir"
 
 
+_CHAR_REPLACEMENTS = {
+    "\u2014": "-",   # em dash —
+    "\u2013": "-",   # en dash –
+    "\u2018": "'",   # ‘
+    "\u2019": "'",   # ’
+    "\u201c": '"',   # “
+    "\u201d": '"',   # ”
+    "\u2026": "...", # …
+    "\u00a0": " ",   # espace insécable
+    "\u2022": "-",   # puce •
+}
+
+
+def _clean(text: str | None) -> str:
+    """Nettoie le texte pour l'écriture PDF (canvas et surtout champs AcroForm) :
+    remplace les caractères typographiques non gérés par l'encodeur de reportlab
+    pour les champs de formulaire, puis retombe sur Latin-1 en dernier recours
+    pour éviter tout KeyError d'échappement PDF."""
+    if not text:
+        return ""
+    s = str(text)
+    for bad, good in _CHAR_REPLACEMENTS.items():
+        s = s.replace(bad, good)
+    # Filet de sécurité : tout caractère encore hors Latin-1 (accents exotiques,
+    # symboles, emoji...) est remplacé plutôt que de faire planter la génération.
+    return s.encode("latin-1", errors="replace").decode("latin-1")
+
+
 def _wrap_text(c: canvas.Canvas, text: str, font: str, size: float, max_width: float) -> list[str]:
     """Découpe `text` en lignes tenant dans `max_width` pour la police/taille donnée."""
-    words = (text or "").split()
+    words = _clean(text).split()
     lines: list[str] = []
     cur = ""
     for w in words:
@@ -88,7 +116,7 @@ def draw_summary_page(c: canvas.Canvas, batiment, scenarios, scenario_choisi_id:
         f"Adresse : {batiment.adresse or '—'}    |    "
         f"Date : {date.today().strftime('%d/%m/%Y')}"
     )
-    c.drawString(MARGIN, PAGE_H - MARGIN - 26, infos)
+    c.drawString(MARGIN, PAGE_H - MARGIN - 26, _clean(infos))
 
     # Bandeau scénario retenu
     chosen = next((s for s in scenarios if s.id == scenario_choisi_id), None)
@@ -98,7 +126,7 @@ def draw_summary_page(c: canvas.Canvas, batiment, scenarios, scenario_choisi_id:
         c.roundRect(MARGIN, band_y - 14, 260, 20, 3, fill=1, stroke=0)
         c.setFillColor(colors.white)
         c.setFont("Helvetica-Bold", 10)
-        c.drawString(MARGIN + 8, band_y - 8, f"SCENARIO RETENU : {chosen.nom.replace(chr(10), ' ')}")
+        c.drawString(MARGIN + 8, band_y - 8, _clean(f"SCENARIO RETENU : {chosen.nom.replace(chr(10), ' ')}"))
 
     # Tableau comparatif
     headers = ["Scénario", "CEP avant", "CEP après", "CEF avant", "CEF après",
@@ -188,9 +216,9 @@ def _field(c: canvas.Canvas, name: str, x: float, y: float, w: float, h: float,
     form = c.acroForm
     form.textfield(
         name=name,
-        tooltip=tooltip or name,
+        tooltip=_clean(tooltip or name),
         x=x, y=y, width=w, height=h,
-        value=value or "",
+        value=_clean(value),
         fontName="Helvetica",
         fontSize=font_size,
         borderStyle="underlined",
@@ -234,13 +262,13 @@ def draw_fiche_page(c: canvas.Canvas, batiment, scenario, all_travaux: list[dict
     c.drawString(left + width / 2, top - 46, "Date :")
 
     c.setFont("Helvetica", 9)
-    c.drawString(left + 68, top - 30, batiment.beneficiaire or "")
+    c.drawString(left + 68, top - 30, _clean(batiment.beneficiaire or ""))
     c.setFont("Helvetica-Bold", 9)
     c.setFillColor(COL_HILITE_BORDER)
-    c.drawString(left + width / 2 + 90, top - 30, scenario.nom.replace("\n", " "))
+    c.drawString(left + width / 2 + 90, top - 30, _clean(scenario.nom.replace("\n", " ")))
     c.setFillColor(colors.HexColor("#1F1F1F"))
     c.setFont("Helvetica", 9)
-    c.drawString(left + 68, top - 46, batiment.adresse or "")
+    c.drawString(left + 68, top - 46, _clean(batiment.adresse or ""))
     c.drawString(left + width / 2 + 40, top - 46, date.today().strftime("%d/%m/%Y"))
 
     # --- Tableau des travaux (préconisés = texte figé issu de l'audit ;
@@ -351,12 +379,12 @@ def generate_pdf(batiment, scenarios, scenario_choisi_id: str) -> bytes:
     chosen = next((s for s in scenarios if s.id == scenario_choisi_id), scenarios[0])
     all_travaux = []
     for e in chosen.etapes:
-        suffix = f" — {e.libelle}" if len(chosen.etapes) > 1 else ""
+        suffix = f" - {e.libelle}" if len(chosen.etapes) > 1 else ""
         for t in e.travaux:
             all_travaux.append({
-                "nature": f"{t.nature_affichee}{suffix}",
-                "carac": t.caracteristiques,
-                "quantite": t.quantite,
+                "nature": _clean(f"{t.nature_affichee}{suffix}"),
+                "carac": _clean(t.caracteristiques),
+                "quantite": _clean(t.quantite),
             })
 
     draw_fiche_page(c, batiment, chosen, all_travaux, field_prefix=chosen.id)
