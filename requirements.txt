@@ -11,3 +11,4 @@ supabase
 bs4
 streamlit-paste-button
 pdfplumber
+reportlab
