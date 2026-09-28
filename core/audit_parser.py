@@ -367,6 +367,16 @@ class Scenario:
 
 
 @dataclass
+class Auditeur:
+    raison_sociale: str | None = None
+    siren: str | None = None
+    date_audit: str | None = None       # date d'établissement de l'audit
+    reference_audit: str | None = None  # N° ADEME, sinon référence interne — souvent absente
+    logiciel: str | None = None
+    version_logiciel: str | None = None  # souvent absente
+
+
+@dataclass
 class Batiment:
     adresse: str | None = None
     beneficiaire: str | None = None
@@ -376,6 +386,97 @@ class Batiment:
     cep_initial: float | None = None
     cef_initial: float | None = None
     etiquette_initiale: str | None = None
+    auditeur: Auditeur = field(default_factory=Auditeur)
+
+
+# ---------------------------------------------------------------------------
+# Parsing informations auditeur
+# ---------------------------------------------------------------------------
+# Toujours [ \t]* (jamais \s*) après les ":" : les champs vides sont fréquents
+# (Climawin : "N° :\n", "Référence de l'audit :\n") et \s* ferait glisser la
+# capture sur la ligne suivante.
+
+RE_INFOS_AUDITEUR = re.compile(r"Informations auditeur[ \t]*\n\s*([^\n]+)", re.I)
+RE_SIRET = re.compile(r"N\s*°\s*SIRET[ \t]*:?[ \t]*(\d[\d ]{12,18}\d)", re.I)
+RE_SIREN = re.compile(r"N\s*°\s*SIREN[ \t]*:?[ \t]*(\d[\d ]{7,10}\d)", re.I)
+RE_DATE_AUDIT = re.compile(
+    r"(?:date d[’']\s*[ée]tablissement|[ÉEée]tabli le)[ \t]*:?[ \t]*(\d{2}/\d{2}/\d{4})", re.I
+)
+# "N° audit : A2531…" (Pleiades), "N°audit :" (LICIEL), "№ audit :" (DPEWIN)
+RE_NUM_AUDIT = re.compile(r"(?:N\s*°|№)[ \t]*audit[ \t]*:[ \t]*(\S[^\n]*)", re.I)
+RE_REF_AUDIT = re.compile(r"R[ée]f[ée]rence de l[’']\s*audit[ \t]*:[ \t]*(\S[^\n]*)", re.I)
+RE_LOGICIEL_VALIDE = re.compile(r"R[ée]f[ée]rence du logiciel valid[ée][ \t]*:[ \t]*(\S[^\n]*)", re.I)
+RE_LOGICIEL_SIMPLE = re.compile(r"(?:Nom du logiciel|Logiciel)[ \t]*:[ \t]*(\S[^\n]*)", re.I)
+RE_VERSION_EXPLICITE = re.compile(r"version[ \t]*:?[ \t]*v?(\d+(?:\.\d+)+)", re.I)
+RE_VERSION_NUM = re.compile(r"\b[vV]?(\d+(?:\.\d+)+)")
+
+
+def _cut_colonne(val: str) -> str:
+    """La reconstruction x/y met parfois deux colonnes sur la même ligne : on coupe
+    au premier grand blanc ou au libellé de la colonne voisine."""
+    val = re.split(r"\s{2,}|\s+(?:N\s*°\s*SIRE[NT]|Auditeur\s*:|Justificatifs|Plans du)", val, flags=re.I)[0]
+    return val.strip(" :")
+
+
+def _split_logiciel(s: str) -> tuple[str | None, str | None]:
+    """"Climawin 2020 version : 2024.11.1.3" -> ("Climawin 2020", "2024.11.1.3")
+    "Pleiades: 6.25.5.4 / 17-7-2025"       -> ("Pleiades", "6.25.5.4")
+    "DPEWIN V5.4.3"                         -> ("DPEWIN", "5.4.3")
+    "LICIEL Diagnostics v4 [Moteur BBS Slama: 2024.6.1.0]" -> ("LICIEL Diagnostics v4", "2024.6.1.0")
+    "Climawin 2020"                         -> ("Climawin 2020", None)"""
+    m = RE_VERSION_EXPLICITE.search(s) or RE_VERSION_NUM.search(s)
+    if not m:
+        return s.strip() or None, None
+    nom = s[: m.start()]
+    nom = re.sub(r"(?:\[.*|version\s*:?)\s*$", "", nom.split("[")[0], flags=re.I)
+    nom = nom.strip(" :/-")
+    return nom or None, m.group(1)
+
+
+def _vide_si_non_renseigne(val: str | None) -> str | None:
+    if not val:
+        return None
+    val = val.strip()
+    # "[NON EMIS ADEME]", "[AUCUNE]", "N/A", "Non communiqué"...
+    if not val or re.match(r"^(\[.*\]|N/?A|non\b)", val, re.I):
+        return None
+    return val
+
+
+def parse_auditeur(text: str) -> Auditeur:
+    a = Auditeur()
+
+    m = RE_INFOS_AUDITEUR.search(text)
+    if m:
+        rs = _cut_colonne(m.group(1))
+        # DPEWIN : la raison sociale est un logo -> la 1re ligne est déjà le SIRET
+        if rs and not re.match(r"N\s*°", rs):
+            a.raison_sociale = rs
+
+    m = RE_SIREN.search(text)
+    if m:
+        a.siren = re.sub(r"\D", "", m.group(1))[:9]
+    else:
+        m = RE_SIRET.search(text)
+        if m:
+            a.siren = re.sub(r"\D", "", m.group(1))[:9]
+
+    m = RE_DATE_AUDIT.search(text)
+    if m:
+        a.date_audit = m.group(1)
+
+    for rex in (RE_NUM_AUDIT, RE_REF_AUDIT):
+        m = rex.search(text)
+        ref = _vide_si_non_renseigne(_cut_colonne(m.group(1))) if m else None
+        if ref:
+            a.reference_audit = ref
+            break
+
+    m = RE_LOGICIEL_VALIDE.search(text) or RE_LOGICIEL_SIMPLE.search(text)
+    if m:
+        a.logiciel, a.version_logiciel = _split_logiciel(_cut_colonne(m.group(1)))
+
+    return a
 
 
 # ---------------------------------------------------------------------------
@@ -593,5 +694,6 @@ def _parse_etape(libelle: str, block: str) -> Etape:
 def parse_audit_pdf(pdf_bytes: bytes) -> tuple[Batiment, list[Scenario]]:
     text = reflow_pdf_text(pdf_bytes)
     batiment = parse_batiment(text)
+    batiment.auditeur = parse_auditeur(text)
     scenarios = parse_scenarios(text)
     return batiment, scenarios
