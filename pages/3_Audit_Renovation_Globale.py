@@ -20,6 +20,7 @@ Pré-requis :
 
 import copy
 import io
+import re
 from datetime import date
 from pathlib import Path
 
@@ -165,6 +166,44 @@ except ImportError:
         use_container_width=True,
         hide_index=True,
     )
+
+st.divider()
+
+# ---------------------------------------------------------------------------
+# Informations générales de l'auditeur (éditables)
+# ---------------------------------------------------------------------------
+
+st.header("🧾 Informations générales de l'auditeur")
+aud = batiment.auditeur
+_manquants = [
+    lbl for lbl, v in (
+        ("Raison sociale", aud.raison_sociale), ("SIREN", aud.siren),
+        ("Date de l'audit", aud.date_audit), ("Référence de l'audit", aud.reference_audit),
+        ("Logiciel", aud.logiciel), ("N° de version", aud.version_logiciel),
+    ) if not v
+]
+if _manquants:
+    st.caption("Non trouvé dans l'audit (à compléter si besoin) : " + ", ".join(_manquants))
+
+a1, a2, a3 = st.columns(3)
+with a1:
+    aud.raison_sociale = st.text_input("Raison sociale", aud.raison_sociale or "", key=f"aud_rs_{fkey}")
+    aud.siren = st.text_input("Numéro SIREN", aud.siren or "", key=f"aud_siren_{fkey}")
+with a2:
+    aud.date_audit = st.text_input("Date de l'audit énergétique", aud.date_audit or "", key=f"aud_date_{fkey}")
+    aud.reference_audit = st.text_input(
+        "Référence de l'audit énergétique", aud.reference_audit or "",
+        placeholder="Non indiquée", key=f"aud_ref_{fkey}",
+    )
+with a3:
+    aud.logiciel = st.text_input("Nom du logiciel", aud.logiciel or "", key=f"aud_log_{fkey}")
+    aud.version_logiciel = st.text_input(
+        "N° de version", aud.version_logiciel or "",
+        placeholder="Non indiqué", key=f"aud_ver_{fkey}",
+    )
+
+if aud.siren and not re.fullmatch(r"\d{9}", aud.siren.replace(" ", "")):
+    st.warning("⚠️ Le SIREN doit comporter 9 chiffres.")
 
 st.divider()
 
