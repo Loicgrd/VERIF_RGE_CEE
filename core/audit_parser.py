@@ -164,10 +164,12 @@ def find_total_ep_ef(block: str) -> tuple[str, str] | None:
 #  - "Scénario 1 « rénovation en une fois »" (numéroté, guillemets français — LICIEL)
 #  - "Scénario de travaux en une étape «rénovation en une fois»" (non numéroté — Climawin)
 #  - "Scénario 1 "rénovation en une fois"" (numéroté, guillemets droits — Pleiades)
+#  - "Scénario n°1 « rénovation en une fois »" (préfixe "n°" — Climawin, variante
+#    maison individuelle à scénario unique, ex. audits FAYL)
 # Les deux styles de guillemets sont couverts via une classe de caractères pour
 # l'ouvrant et une pour le fermant, plutôt que les caractères littéraux « ».
 RE_SCENARIO_HEADER = re.compile(
-    r"Sc[ée]nario\s*(\d)?\s*(?:de travaux\s*(?:en\s+(?:une|plusieurs)\s+[ée]tapes?)?)?\s*[«\"\u201c]\s*([^»\"\u201d]+?)\s*[»\"\u201d]",
+    r"Sc[ée]nario\s*(?:n\s*[°º]\s*)?(\d)?\s*(?:de travaux\s*(?:en\s+(?:une|plusieurs)\s+[ée]tapes?)?)?\s*[«\"\u201c]\s*([^»\"\u201d]+?)\s*[»\"\u201d]",
     re.I,
 )
 RE_ETAPE_HEADER = re.compile(
@@ -254,10 +256,14 @@ RE_QTY_UNITE = re.compile(r"\b(\d+)\s*(?:u\.|unit[ée]s?)\b", re.I)
 # Un montant en euros s'insère parfois au milieu d'une phrase après la reconstruction
 # x/y (colonne "coût" adjacente au texte) : on le retire avant toute analyse de texte.
 RE_PRICE_INLINE = re.compile(r"[\d][\d\s]{0,9}\s*€")
+# En-tête de la colonne coût ("Coût estimé (*TTC)") recollé au dernier poste du bloc
+# par la reconstruction x/y (Climawin FAYL : "Ballon ECS 3* Coût estimé").
+RE_COST_HEADER = re.compile(r"Co[ûu]t\s+estim[ée]\s*(?:\(\s*\*?\s*TTC\s*\))?", re.I)
 
 
 def _clean_for_parsing(text: str) -> str:
     text = RE_PRICE_INLINE.sub(" ", text)
+    text = RE_COST_HEADER.sub(" ", text)
     text = text.replace("≈", " ")  # résidu du marqueur de prix (nombre déjà retiré à côté)
     return re.sub(r"\s+", " ", text).strip()
 
@@ -303,6 +309,10 @@ def _first_sentence(text: str) -> str:
         before = text[idx - 1] if idx > 0 else ""
         after = text[idx + 1] if idx + 1 < len(text) else ""
         if before.isdigit() and after.isdigit():
+            i = idx + 1
+            continue
+        # point d'unité collé ("m².K/W", "W/m².K") : pas une fin de phrase
+        if before in "²2" and after in "Kk":
             i = idx + 1
             continue
         return text[: idx + 1].strip()
@@ -564,7 +574,9 @@ def _parse_etape(libelle: str, block: str) -> Etape:
     if det_start == -1:
         det_start = block.find("étails des travaux énergétiques")
     if det_start != -1:
-        det_end = block.find("Détail des travaux induits", det_start)
+        # "Détail" ou "Détails" selon le logiciel/la version (Climawin FAYL : pluriel)
+        m_ind = re.compile(r"D[ée]tails? des travaux induits").search(block, det_start)
+        det_end = m_ind.start() if m_ind else -1
         if det_end == -1:
             det_end = block.find("Résultats après travaux", det_start)
         if det_end == -1:
