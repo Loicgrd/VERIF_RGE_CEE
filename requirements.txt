@@ -13,6 +13,5 @@ streamlit-paste-button
 pytz
 pdfplumber
 reportlab
-pytesseract
 pymupdf
 rapidfuzz
