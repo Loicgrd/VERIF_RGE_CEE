@@ -14,9 +14,16 @@ Dépendances :
 """
 import hashlib
 import io
+import os
 import re
 import unicodedata
 from bisect import bisect_right
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
+
+# Tesseract lance par défaut plusieurs threads internes (OpenMP) qui se concurrencent :
+# 1 thread par processus est ~3× plus rapide, et on parallélise plutôt les pages.
+# (doit être défini avant le premier appel à tesseract ; hérité par les sous-processus)
+os.environ.setdefault("OMP_THREAD_LIMIT", "1")
 
 import fitz  # PyMuPDF
 import pandas as pd
@@ -35,6 +42,7 @@ DPI_OCR = 300
 LANGUE = "fra"
 SEUIL_TEXTE_NATIF = 50  # nb de caractères au-delà duquel une page est déjà textuelle (pas d'OCR)
 SEUIL_PAGE_FIABLE = 70  # confiance moyenne (%) en dessous de laquelle une page est signalée
+NB_WORKERS = max(1, min(os.cpu_count() or 1, 8))  # pages OCRisées en parallèle (1 par cœur)
 
 
 # ---------------------------------------------------------------- OCR
@@ -50,41 +58,76 @@ def _inserer_texte_invisible(page, texte, rect):
                      render_mode=3, rotate=page.rotation)
 
 
+def _ocr_image(img):
+    """Exécuté dans un thread : pytesseract lance un processus tesseract (le GIL est libéré)."""
+    return pytesseract.image_to_data(img, lang=LANGUE, output_type=pytesseract.Output.DICT)
+
+
 def ocr_pdf(pdf_bytes, barre=None):
     """Retourne (pdf_cherchable, mots, conf_pages).
-    mots : dicts {page, x0, y0, x1, y1, texte, conf}, coordonnées en points (page affichée)."""
+    mots : dicts {page, x0, y0, x1, y1, texte, conf}, coordonnées en points (page affichée).
+
+    Parallélisme : les pages scannées sont rendues une à une dans le thread principal
+    (PyMuPDF n'est pas thread-safe) puis OCRisées en parallèle (NB_WORKERS processus tesseract).
+    Au plus 2 × NB_WORKERS images sont en mémoire à la fois."""
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    mots, conf_pages = [], []
+    nb_pages = len(doc)
     echelle = 72 / DPI_OCR
+    mots_par_page, conf_par_page, resultats_ocr = {}, {}, {}
 
-    for i, page in enumerate(doc):
-        num = i + 1
-        if len(page.get_text().strip()) >= SEUIL_TEXTE_NATIF:
-            # Page déjà textuelle : pas d'OCR, confiance 100 %
-            for x0, y0, x1, y1, t, *_ in page.get_text("words", sort=True):
-                r = fitz.Rect(x0, y0, x1, y1) * page.rotation_matrix
-                mots.append(dict(page=num, x0=r.x0, y0=r.y0, x1=r.x1, y1=r.y1, texte=t, conf=100.0))
-            conf_pages.append((num, 100.0, "Texte natif"))
-        else:
-            pix = page.get_pixmap(dpi=DPI_OCR)
-            img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
-            data = pytesseract.image_to_data(img, lang=LANGUE, output_type=pytesseract.Output.DICT)
-            confs = []
-            for t, c, l, tp, w, h in zip(data["text"], data["conf"], data["left"],
-                                         data["top"], data["width"], data["height"]):
-                c = float(c)
-                if not t.strip() or c < 0:
-                    continue
-                rect = fitz.Rect(l * echelle, tp * echelle, (l + w) * echelle, (tp + h) * echelle)
-                mots.append(dict(page=num, x0=rect.x0, y0=rect.y0, x1=rect.x1, y1=rect.y1,
-                                 texte=t, conf=c))
-                confs.append(c)
-                _inserer_texte_invisible(page, t, rect)
-            conf_pages.append((num, sum(confs) / len(confs) if confs else 0.0, "OCR"))
-
+    def avancer():
         if barre:
-            barre.progress(num / len(doc), text=f"OCR page {num}/{len(doc)}…")
+            fait = len(conf_par_page) + len(resultats_ocr)
+            barre.progress(fait / nb_pages, text=f"OCR {fait}/{nb_pages} pages ({NB_WORKERS} en parallèle)…")
 
+    with ThreadPoolExecutor(max_workers=NB_WORKERS) as pool:
+        en_cours = {}
+        for i, page in enumerate(doc):
+            num = i + 1
+            if len(page.get_text().strip()) >= SEUIL_TEXTE_NATIF:
+                # Page déjà textuelle : pas d'OCR, confiance 100 %
+                mots_par_page[num] = []
+                for x0, y0, x1, y1, t, *_ in page.get_text("words", sort=True):
+                    r = fitz.Rect(x0, y0, x1, y1) * page.rotation_matrix
+                    mots_par_page[num].append(dict(page=num, x0=r.x0, y0=r.y0, x1=r.x1, y1=r.y1,
+                                                   texte=t, conf=100.0))
+                conf_par_page[num] = (num, 100.0, "Texte natif")
+                avancer()
+                continue
+
+            # Niveaux de gris : même qualité OCR, image 3× plus légère
+            pix = page.get_pixmap(dpi=DPI_OCR, colorspace=fitz.csGRAY)
+            img = Image.frombytes("L", (pix.width, pix.height), pix.samples)
+            en_cours[pool.submit(_ocr_image, img)] = num
+
+            if len(en_cours) >= 2 * NB_WORKERS:  # limite la mémoire
+                finis, _ = wait(en_cours, return_when=FIRST_COMPLETED)
+                for f in finis:
+                    resultats_ocr[en_cours.pop(f)] = f.result()
+                avancer()
+
+        for f in as_completed(en_cours):
+            resultats_ocr[en_cours[f]] = f.result()
+            avancer()
+
+    # Couche texte invisible + mots (thread principal, ordre des pages)
+    for num, data in resultats_ocr.items():
+        page = doc[num - 1]
+        mots_par_page[num], confs = [], []
+        for t, c, l, tp, w, h in zip(data["text"], data["conf"], data["left"],
+                                     data["top"], data["width"], data["height"]):
+            c = float(c)
+            if not t.strip() or c < 0:
+                continue
+            rect = fitz.Rect(l * echelle, tp * echelle, (l + w) * echelle, (tp + h) * echelle)
+            mots_par_page[num].append(dict(page=num, x0=rect.x0, y0=rect.y0, x1=rect.x1, y1=rect.y1,
+                                           texte=t, conf=c))
+            confs.append(c)
+            _inserer_texte_invisible(page, t, rect)
+        conf_par_page[num] = (num, sum(confs) / len(confs) if confs else 0.0, "OCR")
+
+    mots = [m for num in sorted(mots_par_page) for m in mots_par_page[num]]
+    conf_pages = [conf_par_page[num] for num in sorted(conf_par_page)]
     return doc.tobytes(garbage=3, deflate=True), mots, conf_pages
 
 
