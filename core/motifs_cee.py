@@ -13,6 +13,8 @@ Motif administratif / élément :
     presence  : True = signalé ❌ s'il est absent (administratif uniquement)
     partout   : True = cherché dans tout le document, pas seulement sur les pages de la fiche
                 (document séparé : certificat RGE, ACERMI, tableau de répartition…)
+    absent    : statut affiché si non trouvé (défaut ❌ ; ex. « 👁️ À vérifier » pour les marques)
+    ligne     : regex qui doit figurer sur la même ligne que le match (filtre anti-bruit)
     surligner : False = repéré dans les tableaux mais pas surligné dans le PDF (ex. montants)
     note      : aide (optionnel)
 
@@ -170,11 +172,31 @@ PREUVES = {
 }
 
 
+# Marque / référence : seulement après une mention explicite. Les noms sont pris sur la même
+# ligne (le texte OCR garde les retours à la ligne), en majuscule initiale, 4 mots max,
+# et s'arrêtent au mot-clé suivant (référence, Uw, R=, HT…).
+_STOP = r"(?!(?i:r[ée]f(?:[ée]rence)?|uw|sw|ht|lg|marque|mod[èe]le|type|ep|[ée]paisseur|r|dim|pose|options?)\b)"
+_TOK = _STOP + r"[A-Z0-9][\w&+'’./-]*"
+_NOMS = rf"{_TOK}(?:[ \t]+{_TOK}){{0,3}}"
+MARQUE_REF = (
+    rf"(?i:\bmarque|\bfabricant)[ \t]*:?[ \t]*{_NOMS}"
+    rf"(?:[ \t]*\n?[ \t]*[-,/]?[ \t]*(?i:r[ée]f(?:[ée]rence)?\.?|mod[èe]le)[ \t]*:?[ \t]*{_NOMS})?"  # réf. sur la ligne suivante possible
+    rf"|(?i:\br[ée]f(?:[ée]rence)?\.?[ \t]+(?:produit|article|commerciale|isolant|fabricant)|\bmod[èe]le)[ \t]*:?[ \t]*{_NOMS}"
+)
+
+
 # =====================================================================
 # 2. ÉLÉMENTS TECHNIQUES (génériques)
 # =====================================================================
 ELEMENTS = {
-    "Surface (m²)": {"regex": r"\b\d+(?:[ .]\d{3})*(?:[.,]\d+)?\s?m[²2](?![\s.·/]*K)"},
+    "Surface (m²)": {
+        # « 850,00 m² » ou, dans les tableaux, unité avant la quantité « m2 2283,87 »
+        # (pas « R=3,70 m2 » : nombre précédé de « = » exclu ; pas un prix : pas suivi de €)
+        "regex": r"(?<![=\d,.])(?<!=\s)\b\d+(?:[ .]\d{3})*(?:[.,]\d+)?\s?m[²2](?![\s.·/]*K)"
+                 r"|\bm[²2]\s+\d{1,3}(?:[ .]?\d{3})*(?:[.,]\d{1,2})?(?![\d,.]|\s?€)",
+        "ligne": r"(?i)isol|surface|comble|rampant|plancher|toiture|terrasse|\bmurs?\b|fa[çc]ade|\bIT[EI]\b"
+                 r"|menuiser|fen[êe]tre|flocage|souffl|bardage|doublage|habitable",
+        "note": "Seulement sur une ligne qui parle d'isolation / menuiserie / surface"},
     "Résistance thermique R": {
         "regex": r"\bR\s?[=:]\s?\d{1,2}[.,]\d{1,2}(?:\s?m[²2]\s?[.·]?\s?K\s?/\s?W)?"
                  r"|\b\d{1,2}[.,]\d{1,2}\s?m[²2]\s?[.·/]?\s?K\s?/\s?W"},
@@ -188,9 +210,18 @@ ELEMENTS = {
     "Tableau de répartition": {
         "regex": r"\btableau\s+de\s+r[ée]partition\b|\br[ée]partition\s+des\s+surfaces\b", "partout": True,
         "note": "Si plusieurs accès / bâtiments : total = quantitatif facturé"},
-    "Quantité (u)": {"regex": r"\b\d+\s?(?:u|U|unit[ée]s?|ens\.?)\b"},
-    "Uw": {"regex": r"\bUw\s?[=:]?\s?\d[.,]\d{1,2}"},
-    "Sw": {"regex": r"\bSw\s?[=:]?\s?\d[.,]\d{1,2}"},
+    "Quantité (u)": {
+        "regex": r"\b\d+\s?(?:u|U|unit[ée]s?|ens\.?)\b"
+                 r"|\b\d{1,4}\s+(?:fen[êe]tres?|portes?[- ]fen[êe]tres?|persiennes?|volets?|radiateurs?"
+                 r"|[ée]metteurs?|bouches?|caissons?|tourelles?|entr[ée]es?\s+d['’]?\s?air|chaudi[èe]res?)\b",
+        "note": "« 12 u » ou quantité devant l'objet (« 112 FENETRES »)"},
+    "Marque / référence": {
+        "regex": MARQUE_REF, "casse": True, "absent": "👁️ À vérifier",
+        "note": "Seulement si mention explicite « marque », « référence », « modèle »"},
+    "Uw": {"regex": r"\bUw\s?[-=:]*\s?\d[.,]?\d{1,2}(?:\s?W\s?/\s?M\S{0,3}K)?",
+           "note": "Virgule souvent perdue à l'OCR : « UW=13 » = 1,3"},
+    "Sw": {"regex": r"\bSw\s?[-=:]*\s?\d[.,]?\d{1,2}",
+           "note": "Virgule souvent perdue à l'OCR : « SW=040 » = 0,40"},
     "Puissance (W / kW)": {"regex": r"(?<![/.])\b\d+(?:[.,]\d+)?\s?k?W\b(?!\s?h)"},
     "ETAS (%)": {
         "regex": r"\b(?:[ée]tas|efficacit[ée]\s+[ée]nerg[ée]tique\s+saisonni[èe]re)\b[^\n]{0,30}?\d{2,3}\s?%"},
@@ -207,12 +238,12 @@ ELEMENTS = {
 }
 
 ISOLATION = ["Surface (m²)", "Résistance thermique R", "Épaisseur (mm)", "Date de visite préalable",
-             "Marque de l'isolant", "Référence de l'isolant", "Certificat ACERMI", "Tableau de répartition"]
+             "Marque / référence", "Certificat ACERMI", "Tableau de répartition"]
 
 
 # =====================================================================
 # 3. FICHES : termes de détection + checklist (d'après « Rapport éléments techniques »)
-#    Un élément absent de ELEMENTS (marque, référence…) apparaît en « 👁️ À vérifier ».
+#    Un élément absent de ELEMENTS apparaît en « 👁️ À vérifier ».
 # =====================================================================
 FICHES = {
     "BAR-EN-101": {
@@ -224,7 +255,7 @@ FICHES = {
     },
     "BAR-EN-102": {
         "libelle": "Isolation des murs",
-        "termes": r"\b(?:ITE|ITI|ravalement|bardage|EMI|enduit\s+mince\s+sur\s+isolant|isolation\s+thermique\s+(?:ext|int)[ée]rieure|doublage|isolation\s+des\s+murs)\b",
+        "termes": r"\b(?:ITE|ITI|(?<!hors\s)ravalement|bardage|isolation\s+thermique\s+(?:des\s+)?fa[çc]ades|EMI|enduit\s+mince\s+sur\s+isolant|isolation\s+thermique\s+(?:ext|int)[ée]rieure|doublage|isolation\s+des\s+murs)\b",
         "elements": ISOLATION,
         "rge": ["Isolation par l'intérieur des murs ou rampants de toitures ou plafonds",
                 "Isolation des murs par l'extérieur"],
@@ -238,46 +269,43 @@ FICHES = {
     "BAR-EN-104": {
         "libelle": "Fenêtre ou porte-fenêtre avec vitrage isolant",
         "termes": r"\b(?:menuiseries?|fen[êe]tres?|portes?[- ]fen[êe]tres?|velux|vitrage|double\s+fen[êe]tre)\b",
-        "termes_casse": r"\b(?:PF|OF)\b",
+        "termes_casse": r"(?<![\w-])(?:PF|OF)(?![\w-])",  # pas dans « T-PF-1578575 »
         "elements": ["Quantité (u)", "Uw", "Sw", "Surface (m²)",
-                     "Marque de la menuiserie", "Référence de la menuiserie"],
+                     "Marque / référence"],
         "rge": ["Fenêtres, volets, portes donnant sur l'extérieur", "Fenêtres de toit"],
     },
     "BAR-EN-105": {
         "libelle": "Isolation des toitures terrasses",
         "termes": r"\b(?:toitures?[- ]terrasses?|r[ée]fection\s+d['’]?\s?[ée]tanch[ée]it[ée]|[ée]tanch[ée]it[ée]|toitures?\s+par\s+l['’]?\s?ext[ée]rieur)\b",
         "elements": ["Surface (m²)", "Résistance thermique R", "Épaisseur (mm)",
-                     "Marque de l'isolant", "Référence de l'isolant", "Certificat ACERMI", "Tableau de répartition"],
+                     "Marque / référence", "Certificat ACERMI", "Tableau de répartition"],
         "rge": ["Isolation des toitures terrasses ou des toitures par l'extérieur"],
     },
     "BAR-TH-106": {
         "libelle": "Chaudière individuelle haute performance",
         "termes": r"\b(?:chaudi[èe]res?|condensation|haute\s+performance\s+[ée]nerg[ée]tique)\b",
-        "elements": ["Quantité (u)", "Marque / référence chaudière", "Puissance (W / kW)", "ETAS (%)",
-                     "Marque / référence régulateur", "Classe du régulateur", "Surface habitable"],
+        "elements": ["Quantité (u)", "Marque / référence", "Puissance (W / kW)", "ETAS (%)",
+                     "Classe du régulateur", "Surface habitable"],
         "rge": [],
     },
     "BAR-TH-110": {
         "libelle": "Radiateurs basse température",
         "termes": r"\b(?:basse\s+temp[ée]rature|chauffage\s+central)\b",
-        "elements": ["Quantité (u)", "Mention « basse température »",
-                     "Marque des radiateurs", "Référence des radiateurs"],
+        "elements": ["Quantité (u)", "Mention « basse température »", "Marque / référence"],
         "rge": [],
     },
     "BAR-TH-127": {
         "libelle": "VMC simple flux hygroréglable",
         "termes": r"\b(?:VMC|tourelles?|caissons?|bouches?\s+d['’]?\s?extraction|entr[ée]es?\s+d['’]?\s?air|hygro(?:r[ée]glable)?|ventilation\s+m[ée]canique)\b",
         "elements": ["Quantité (u)", "Hygroréglable type A / B",
-                     "Marque / référence caissons ou tourelles", "Marque / référence bouches",
-                     "Marque / référence entrées d'air", "Puissance absorbée pondérée (WThC/m³/h)",
+                     "Marque / référence", "Puissance absorbée pondérée (WThC/m³/h)",
                      "Surface habitable", "ATec / DTA"],
         "rge": ["Ventilation mécanique"],
     },
     "BAR-TH-158": {
         "libelle": "Émetteur électrique à régulation électronique",
         "termes": r"\b(?:radiateurs?\s+[ée]lectriques?|[ée]metteurs?\s+[ée]lectriques?|rayonnants?|r[ée]gulation\s+[ée]lectronique|fonctions\s+avanc[ée]es)\b",
-        "elements": ["Quantité (u)", "Puissance (W / kW)", "Marque des radiateurs",
-                     "Référence des radiateurs", "Mention NF 3 étoiles œil"],
+        "elements": ["Quantité (u)", "Puissance (W / kW)", "Marque / référence", "Mention NF 3 étoiles œil"],
         "rge": ["Radiateurs électriques, dont régulation"],
     },
 }
@@ -299,8 +327,9 @@ def motifs_administratifs():
 
 @lru_cache(maxsize=1)
 def motifs_elements():
-    """[('Technique', nom, regex compilée)] + un motif « Domaine RGE » par fiche."""
-    sortie = [("Technique", nom, re.compile(e["regex"], _flags(e))) for nom, e in ELEMENTS.items()]
+    """[('Technique', nom, regex, filtre de ligne ou None)] + un motif « Domaine RGE » par fiche."""
+    sortie = [("Technique", nom, re.compile(e["regex"], _flags(e)),
+               re.compile(e["ligne"]) if e.get("ligne") else None) for nom, e in ELEMENTS.items()]
     for code, f in FICHES.items():
         if f["rge"]:
             sortie.append(("RGE", f"Domaine RGE {code}", re.compile(_libelles(*f["rge"]), re.IGNORECASE)))
