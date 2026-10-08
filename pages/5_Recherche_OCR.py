@@ -26,6 +26,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed
 os.environ.setdefault("OMP_THREAD_LIMIT", "1")
 
 import fitz  # PyMuPDF
+import numpy as np
 import pandas as pd
 import pytesseract
 import streamlit as st
@@ -42,6 +43,11 @@ DPI_OCR = 300
 LANGUE = "fra"
 SEUIL_TEXTE_NATIF = 50  # nb de caractères au-delà duquel une page est déjà textuelle (pas d'OCR)
 SEUIL_PAGE_FIABLE = 70  # confiance moyenne (%) en dessous de laquelle une page est signalée
+# Segmentation Tesseract : mode auto (3) par défaut ; il saute les colonnes de chiffres des
+# tableaux à traits verticaux (DPGF, devis). Ces pages sont détectées et lues en mode 6
+# (« bloc uniforme »), qui garde les lignes du tableau. Le mode 6 dégrade les pages de texte.
+PSM_TEXTE, PSM_TABLEAU = 3, 6
+SEUIL_TRAITS_TABLEAU = 3  # nb de traits verticaux longs pour considérer qu'une page est un tableau
 NB_WORKERS = max(1, min(os.cpu_count() or 1, 8))  # pages OCRisées en parallèle (1 par cœur)
 
 
@@ -58,9 +64,25 @@ def _inserer_texte_invisible(page, texte, rect):
                      render_mode=3, rotate=page.rotation)
 
 
-def _ocr_image(img):
+def _ocr_image(img, psm):
     """Exécuté dans un thread : pytesseract lance un processus tesseract (le GIL est libéré)."""
-    return pytesseract.image_to_data(img, lang=LANGUE, output_type=pytesseract.Output.DICT)
+    return pytesseract.image_to_data(img, lang=LANGUE, config=f"--psm {psm}",
+                                     output_type=pytesseract.Output.DICT)
+
+
+def _est_tableau(img, frac=0.25):
+    """True si la page contient ≥ SEUIL_TRAITS_TABLEAU traits verticaux couvrant > 25 % de la hauteur
+    (tableau quadrillé). Calcul sur une image réduite : quelques millisecondes."""
+    a = np.asarray(img.reduce(3)) < 128
+    h = a.shape[0]
+    n, prec = 0, False
+    for c in np.where(a.mean(axis=0) > frac)[0]:
+        bords = np.diff(np.concatenate(([0], a[:, c].astype(np.int8), [0])))
+        debut, fin = np.where(bords == 1)[0], np.where(bords == -1)[0]
+        ok = len(debut) and (fin - debut).max() > frac * h
+        n += bool(ok and not prec)
+        prec = ok
+    return n >= SEUIL_TRAITS_TABLEAU
 
 
 def ocr_pdf(pdf_bytes, barre=None):
@@ -73,7 +95,7 @@ def ocr_pdf(pdf_bytes, barre=None):
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     nb_pages = len(doc)
     echelle = 72 / DPI_OCR
-    mots_par_page, conf_par_page, resultats_ocr = {}, {}, {}
+    mots_par_page, conf_par_page, resultats_ocr, source = {}, {}, {}, {}
 
     def avancer():
         if barre:
@@ -98,7 +120,9 @@ def ocr_pdf(pdf_bytes, barre=None):
             # Niveaux de gris : même qualité OCR, image 3× plus légère
             pix = page.get_pixmap(dpi=DPI_OCR, colorspace=fitz.csGRAY)
             img = Image.frombytes("L", (pix.width, pix.height), pix.samples)
-            en_cours[pool.submit(_ocr_image, img)] = num
+            tableau = _est_tableau(img)
+            source[num] = "OCR (tableau)" if tableau else "OCR"
+            en_cours[pool.submit(_ocr_image, img, PSM_TABLEAU if tableau else PSM_TEXTE)] = num
 
             if len(en_cours) >= 2 * NB_WORKERS:  # limite la mémoire
                 finis, _ = wait(en_cours, return_when=FIRST_COMPLETED)
@@ -124,7 +148,7 @@ def ocr_pdf(pdf_bytes, barre=None):
                                            texte=t, conf=c))
             confs.append(c)
             _inserer_texte_invisible(page, t, rect)
-        conf_par_page[num] = (num, sum(confs) / len(confs) if confs else 0.0, "OCR")
+        conf_par_page[num] = (num, sum(confs) / len(confs) if confs else 0.0, source[num])
 
     mots = [m for num in sorted(mots_par_page) for m in mots_par_page[num]]
     conf_pages = [conf_par_page[num] for num in sorted(conf_par_page)]
@@ -216,27 +240,43 @@ def indexer_pages(mots):
         par_page.setdefault(m["page"], []).append(m)
     index = {}
     for page, liste in par_page.items():
-        debuts, pos = [], 0
-        for m in liste:
+        # Mots séparés par « \n » quand on change de ligne (sinon espace) : les motifs
+        # « même ligne » (marque / référence…) ne débordent pas sur la ligne suivante.
+        debuts, pos, morceaux = [], 0, []
+        for i, m in enumerate(liste):
+            if i:
+                prec = liste[i - 1]
+                hauteur = max(prec["y1"] - prec["y0"], 1)
+                nouvelle_ligne = m["y0"] > prec["y1"] - 0.3 * hauteur or m["x0"] < prec["x0"]
+                morceaux.append("\n" if nouvelle_ligne else " ")
+                pos += 1
             debuts.append(pos)
-            pos += len(m["texte"]) + 1
-        index[page] = (liste, debuts, " ".join(m["texte"] for m in liste))
+            morceaux.append(m["texte"])
+            pos += len(m["texte"])
+        index[page] = (liste, debuts, "".join(morceaux))
     return index
 
 
 def appliquer(index, motifs):
-    """motifs : [(groupe, nom, regex)] → une ligne par occurrence, ramenée aux mots OCR couverts."""
+    """motifs : [(groupe, nom, regex[, filtre de ligne])] → une ligne par occurrence,
+    ramenée aux mots OCR couverts. Le filtre éventuel doit figurer sur la même ligne."""
     resultats = []
     for page, (liste, debuts, texte) in index.items():
-        for groupe, nom, rx in motifs:
+        for groupe, nom, rx, *filtre in motifs:
+            filtre = filtre[0] if filtre else None
             for match in rx.finditer(texte):
+                if filtre is not None:
+                    debut_l = texte.rfind("\n", 0, match.start()) + 1
+                    fin_l = texte.find("\n", match.end())
+                    if not filtre.search(texte[debut_l:fin_l if fin_l >= 0 else None]):
+                        continue
                 i0 = bisect_right(debuts, match.start()) - 1
                 i1 = bisect_right(debuts, match.end() - 1)
                 sel = liste[i0:i1]
                 if not sel:
                     continue
                 resultats.append({
-                    "Groupe": groupe, "Élément": nom, "Valeur": match.group(0).strip(), "Page": page,
+                    "Groupe": groupe, "Élément": nom, "Valeur": " ".join(match.group(0).split()), "Page": page,
                     "Confiance OCR (%)": round(sum(m["conf"] for m in sel) / len(sel)),
                     "Contexte": " ".join(m["texte"] for m in liste[max(0, i0 - 8):i1 + 8]),
                     "_boites": [(m["x0"], m["y0"], m["x1"], m["y1"]) for m in sel],
@@ -335,7 +375,8 @@ def checklist_fiche(code, res_tech, pages_fiche, restreindre, pages_faibles):
         note = ELEMENTS.get(el, {}).get("note", "")
         if element_partout(el):
             note = ("Cherché dans tout le document. " + note).strip()
-        lignes.append({"Élément": nom, "Statut": "✅ Trouvé" if len(occ) else _statut_absent(pages_faibles),
+        absent = ELEMENTS.get(el, {}).get("absent") or _statut_absent(pages_faibles)
+        lignes.append({"Élément": nom, "Statut": "✅ Trouvé" if len(occ) else absent,
                        "Occurrences": len(occ), "Pages": _pages(occ), "Valeurs": _valeurs(occ),
                        "Note": note})
         occurrences.append(occ.assign(Groupe=code, Élément=nom))
@@ -361,8 +402,9 @@ def export_excel(feuilles):
 
 
 COULEURS = {  # RGB 0-1 (surlignage PDF) + hex (légende)
-    "Administratif": ((0.45, 0.70, 1.00), "#73B3FF"),
+    "SIRET": ((0.45, 0.70, 1.00), "#73B3FF"),
     "Technique": ((0.45, 0.90, 0.40), "#73E666"),
+    "Marque / référence": ((1.00, 0.70, 0.30), "#FFB34D"),
 }
 
 
@@ -454,7 +496,7 @@ def afficher_recherche_ocr():
     # --- Fiabilité OCR
     c1, c2, c3 = st.columns(3)
     c1.metric("Pages", len(conf_pages))
-    c2.metric("Pages OCRisées", sum(1 for *_, s in conf_pages if s == "OCR"))
+    c2.metric("Pages OCRisées", sum(1 for *_, s in conf_pages if s.startswith("OCR")))
     moy = sum(c for _, c, _ in conf_pages) / len(conf_pages) if conf_pages else 0
     c3.metric("Confiance OCR moyenne", f"{moy:.0f} %")
 
@@ -480,14 +522,18 @@ def afficher_recherche_ocr():
                       default=list(COULEURS), key="ocr_volets") or []
     if volets:
         st.markdown(legende(volets) + "&nbsp; — survoler un surlignage dans le lecteur PDF "
-                    "pour voir l'élément repéré (montants exclus).", unsafe_allow_html=True)
-    occ_technique = pd.concat([res_tech, occ_fiches[occ_fiches["Élément"] == "Terme"]
-                               .assign(Élément="Terme technique")])
+                    "pour voir l'élément repéré.", unsafe_allow_html=True)
+    est_marque = res_tech["Élément"] == "Marque / référence"
+    sources = {
+        "SIRET": res_admin[res_admin["Élément"] == "SIRET"],
+        "Technique": pd.concat([res_tech[~est_marque], occ_fiches[occ_fiches["Élément"] == "Terme"]
+                                .assign(Élément="Terme technique")]),
+        "Marque / référence": res_tech[est_marque],
+    }
     cle_surl = (cle, tuple(volets))
     if st.session_state.get("ocr_surligne_cle") != cle_surl:
         with st.spinner("Surlignage…"):
-            st.session_state["ocr_surligne"] = pdf_surligne(pdf_ocr, {
-                v: {"Administratif": res_admin, "Technique": occ_technique}[v] for v in volets})
+            st.session_state["ocr_surligne"] = pdf_surligne(pdf_ocr, {v: sources[v] for v in volets})
         st.session_state["ocr_surligne_cle"] = cle_surl
 
     base = fichier.name.rsplit(".", 1)[0]
@@ -498,9 +544,14 @@ def afficher_recherche_ocr():
     c2.download_button("📄 PDF cherchable seul (Ctrl+F)", pdf_ocr,
                        file_name=base + "_ocr.pdf", mime="application/pdf", width="stretch")
 
-    st.divider()
-    onglet_tech, onglet_admin, onglet_libre = st.tabs(
-        ["🔧 Checklist par fiche", "📋 Administratif (tableaux)", "🔎 Recherche libre"])
+    fiches_vues = detection[~detection["Détection"].str.startswith("⚪")]
+    if len(fiches_vues):
+        st.caption("Fiches détectées : " + " · ".join(
+            f"**{f}** ({d[2:]})" for f, d in zip(fiches_vues["Fiche"], fiches_vues["Détection"])))
+
+    volet = st.expander("📊 Données détaillées — checklist par fiche, administratif, recherche, export Excel")
+    onglet_tech, onglet_admin, onglet_libre = volet.tabs(
+        ["🔧 Checklist par fiche", "📋 Administratif", "🔎 Recherche libre"])
 
     # --- Technique par fiche
     with onglet_tech:
@@ -531,8 +582,8 @@ def afficher_recherche_ocr():
             synth, occ = checklist_fiche(code, res_tech, pages_fiche, restreindre, pages_faibles)
             checklists.append(synth.assign(Fiche=code))
             occ_tech.append(occ)
-            with st.expander(_titre(f"{code} · {FICHES[code]['libelle']}", synth, "✅"),
-                             expanded=len(fiches) <= 2):
+            with st.container(border=True):
+                st.markdown(_titre(f"{code} · {FICHES[code]['libelle']}", synth, "✅"))
                 if not pages_fiche:
                     st.caption("Fiche non détectée dans le document : recherche sur toutes les pages.")
                 elif restreindre:
@@ -544,13 +595,16 @@ def afficher_recherche_ocr():
 
     # --- Administratif
     with onglet_admin:
-        for cat in ADMINISTRATIF:
+        cats = st.pills("Catégorie", list(ADMINISTRATIF), selection_mode="multi",
+                        default=list(ADMINISTRATIF), key=f"cats_{cle}") or []
+        for cat in cats:
             synth = synth_admin[synth_admin["Catégorie"] == cat].drop(columns="Catégorie")
-            with st.expander(_titre(cat, synth, "✅")):
+            with st.container(border=True):
+                st.markdown(_titre(cat, synth, "✅"))
                 st.dataframe(synth, hide_index=True, width="stretch")
         voir_occurrences(res_admin, pdf_ocr, f"admin_{cle}")
 
-    st.download_button(
+    volet.download_button(
         "📊 Exporter en Excel (fiches, technique, administratif, détail)",
         export_excel({
             "Fiches détectées": detection,
