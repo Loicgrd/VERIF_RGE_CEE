@@ -1,11 +1,12 @@
 """
-Recherche OCR dans les PDF scannés — V2
+Recherche OCR dans les PDF scannés — V3
 - OCR local (Tesseract), sans IA externe
 - PDF cherchable téléchargeable (Ctrl+F)
 - Recherche exacte / floue avec page, contexte et aperçu surligné
 - Score de confiance OCR par page et par résultat
-- Repérage automatique des éléments CEE (motifs dans core/motifs_cee.py)
-  avec synthèse présent / absent et export Excel
+- Volet technique : fiches BAR détectées (code et/ou termes) + checklist des éléments attendus
+- Volet administratif : synthèse présent / absent par catégorie
+- Export Excel (motifs et référentiel fiches dans core/motifs_cee.py)
 
 Dépendances :
     requirements.txt : pytesseract pymupdf rapidfuzz pillow pandas openpyxl
@@ -24,7 +25,8 @@ import streamlit as st
 from PIL import Image, ImageDraw
 from rapidfuzz import fuzz
 
-from core.motifs_cee import MOTIFS, motifs_compiles
+from core.motifs_cee import (ADMINISTRATIF, ELEMENTS, FICHES, PREUVES, element_partout, motifs_administratifs,
+                             motifs_elements, motifs_fiches, normaliser_code)
 
 # Windows : décommenter et adapter le chemin si Tesseract n'est pas dans le PATH
 # pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
@@ -161,23 +163,29 @@ def apercu(pdf_bytes, num_page, boites, zoom=2):
 
 # ---------------------------------------------------------------- Repérage automatique
 
-def reperer(mots, categories):
-    """Applique les motifs des catégories choisies, page par page.
-    Les mots OCR sont joints par des espaces ; chaque match est ramené aux mots qu'il couvre."""
+SEUIL_TERMES = 2  # nb d'occurrences de termes pour détecter une fiche sans son code
+
+
+def indexer_pages(mots):
+    """page → (mots, position de début de chaque mot, texte de la page)."""
     par_page = {}
     for m in mots:
         par_page.setdefault(m["page"], []).append(m)
-
-    motifs = [(c, m, rx) for c, m, rx in motifs_compiles() if c in categories]
-    resultats = []
+    index = {}
     for page, liste in par_page.items():
         debuts, pos = [], 0
         for m in liste:
             debuts.append(pos)
             pos += len(m["texte"]) + 1
-        texte = " ".join(m["texte"] for m in liste)
+        index[page] = (liste, debuts, " ".join(m["texte"] for m in liste))
+    return index
 
-        for cat, motif, rx in motifs:
+
+def appliquer(index, motifs):
+    """motifs : [(groupe, nom, regex)] → une ligne par occurrence, ramenée aux mots OCR couverts."""
+    resultats = []
+    for page, (liste, debuts, texte) in index.items():
+        for groupe, nom, rx in motifs:
             for match in rx.finditer(texte):
                 i0 = bisect_right(debuts, match.start()) - 1
                 i1 = bisect_right(debuts, match.end() - 1)
@@ -185,44 +193,121 @@ def reperer(mots, categories):
                 if not sel:
                     continue
                 resultats.append({
-                    "Catégorie": cat,
-                    "Élément": motif["nom"],
-                    "Valeur": match.group(0).strip(),
-                    "Page": page,
+                    "Groupe": groupe, "Élément": nom, "Valeur": match.group(0).strip(), "Page": page,
                     "Confiance OCR (%)": round(sum(m["conf"] for m in sel) / len(sel)),
                     "Contexte": " ".join(m["texte"] for m in liste[max(0, i0 - 8):i1 + 8]),
                     "_boites": [(m["x0"], m["y0"], m["x1"], m["y1"]) for m in sel],
                 })
-    return pd.DataFrame(resultats)
+    colonnes = ["Groupe", "Élément", "Valeur", "Page", "Confiance OCR (%)", "Contexte", "_boites"]
+    return pd.DataFrame(resultats, columns=colonnes)
 
 
-def synthese(res, categories, pages_faibles):
-    """Une ligne par motif : nb d'occurrences, pages, statut présent / absent."""
+def _pages(df):
+    return ", ".join(map(str, sorted(df["Page"].unique())))
+
+
+def _valeurs(df, n=5):
+    return " | ".join(df["Valeur"].drop_duplicates().head(n))
+
+
+def _statut_absent(pages_faibles):
+    return (f"⚠️ Non trouvé (OCR faible p. {', '.join(map(str, pages_faibles))})"
+            if pages_faibles else "❌ Absent")
+
+
+# --- Volet administratif
+
+def synthese_admin(res, pages_faibles):
     lignes = []
-    for cat in categories:
-        for motif in MOTIFS[cat]:
-            occ = res[res["Élément"] == motif["nom"]] if not res.empty else res
-            pages = sorted(occ["Page"].unique()) if len(occ) else []
-            if len(occ):
-                statut = "✅ Présent"
-            elif motif.get("presence"):
-                statut = ("⚠️ Non trouvé (OCR faible p. " + ", ".join(map(str, pages_faibles)) + ")"
-                          if pages_faibles else "❌ Absent")
-            else:
-                statut = "—"
-            lignes.append({
-                "Catégorie": cat, "Élément": motif["nom"], "Statut": statut,
-                "Occurrences": len(occ), "Pages": ", ".join(map(str, pages)),
-                "Valeurs": " | ".join(occ["Valeur"].drop_duplicates().head(5)) if len(occ) else "",
-            })
+    cat_pieces = "Pièces engagement / réalisation"
+    for preuve, pieces in PREUVES.items():
+        occ = res[(res["Groupe"] == cat_pieces) & res["Élément"].isin(pieces)]
+        lignes.append({"Catégorie": cat_pieces, "Élément": f"➜ {preuve}",
+                       "Statut": "✅ Présent" if len(occ) else _statut_absent(pages_faibles),
+                       "Occurrences": len(occ), "Pages": _pages(occ),
+                       "Valeurs": ", ".join(occ["Élément"].drop_duplicates()), "Note": "Au moins une pièce"})
+    for cat, liste in ADMINISTRATIF.items():
+        for motif in liste:
+            occ = res[(res["Groupe"] == cat) & (res["Élément"] == motif["nom"])]
+            statut = ("✅ Présent" if len(occ)
+                      else _statut_absent(pages_faibles) if motif.get("presence") else "—")
+            lignes.append({"Catégorie": cat, "Élément": motif["nom"], "Statut": statut,
+                           "Occurrences": len(occ), "Pages": _pages(occ), "Valeurs": _valeurs(occ),
+                           "Note": motif.get("note", "")})
     return pd.DataFrame(lignes)
 
 
-def export_excel(synth, detail, nom_fichier):
+# --- Volet technique
+
+def detecter_fiches(occ_fiches):
+    """Fiches présentes d'après le code explicite et/ou les termes techniques associés."""
+    occ = occ_fiches.copy()
+    est_code = occ["Élément"] == "Code"
+    occ.loc[est_code, "Groupe"] = occ.loc[est_code, "Valeur"].map(normaliser_code)
+
+    lignes = []
+    for code in sorted(set(occ["Groupe"])):
+        codes = occ[(occ["Groupe"] == code) & (occ["Élément"] == "Code")]
+        termes = occ[(occ["Groupe"] == code) & (occ["Élément"] == "Terme")]
+        if len(codes) and len(termes):
+            detection = "✅ Code + termes"
+        elif len(codes):
+            detection = "🔵 Code seul"
+        elif len(termes) >= SEUIL_TERMES:
+            detection = "🟡 Termes seuls (à confirmer)"
+        else:
+            detection = "⚪ Indice faible"
+        pages = sorted(set(codes["Page"]) | set(termes["Page"]))
+        lignes.append({
+            "Fiche": code,
+            "Libellé": FICHES.get(code, {}).get("libelle", "Pas de référentiel"),
+            "Détection": detection,
+            "Code (pages)": _pages(codes),
+            "Termes trouvés": f"{len(termes)} : " + ", ".join(
+                termes["Valeur"].str.lower().drop_duplicates().head(6)) if len(termes) else "",
+            "Pages fiche": ", ".join(map(str, pages)),
+            "_pages": pages,
+        })
+    colonnes = ["Fiche", "Libellé", "Détection", "Code (pages)", "Termes trouvés", "Pages fiche", "_pages"]
+    return pd.DataFrame(lignes, columns=colonnes), occ
+
+
+def checklist_fiche(code, res_tech, pages_fiche, restreindre, pages_faibles):
+    """Checklist des éléments attendus pour la fiche + occurrences retenues."""
+    attendus = list(FICHES[code]["elements"])
+    if FICHES[code]["rge"]:
+        attendus.append(f"Domaine RGE {code}")
+
+    lignes, occurrences = [], []
+    for el in attendus:
+        nom = "Domaine RGE (libellé exact)" if el.startswith("Domaine RGE") else el
+        if el not in ELEMENTS and not el.startswith("Domaine RGE"):
+            lignes.append({"Élément": nom, "Statut": "👁️ À vérifier", "Occurrences": 0,
+                           "Pages": "", "Valeurs": "", "Note": "Non repérable par motif"})
+            continue
+        occ = res_tech[res_tech["Élément"] == el]
+        hors_pages = element_partout(el) or not restreindre
+        if not hors_pages:
+            occ = occ[occ["Page"].isin(pages_fiche)]
+        note = ELEMENTS.get(el, {}).get("note", "")
+        if element_partout(el):
+            note = ("Cherché dans tout le document. " + note).strip()
+        lignes.append({"Élément": nom, "Statut": "✅ Trouvé" if len(occ) else _statut_absent(pages_faibles),
+                       "Occurrences": len(occ), "Pages": _pages(occ), "Valeurs": _valeurs(occ),
+                       "Note": note})
+        occurrences.append(occ.assign(Groupe=code, Élément=nom))
+    occ_df = pd.concat(occurrences) if occurrences else res_tech.iloc[0:0]
+    return pd.DataFrame(lignes), occ_df
+
+
+# --- Export et affichage
+
+def export_excel(feuilles):
+    """feuilles : {nom d'onglet: DataFrame}"""
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as xw:
-        synth.to_excel(xw, sheet_name="Synthèse", index=False)
-        detail.drop(columns="_boites", errors="ignore").to_excel(xw, sheet_name="Détail", index=False)
+        for nom, df in feuilles.items():
+            df.drop(columns=["_boites", "_pages"], errors="ignore").to_excel(xw, sheet_name=nom[:31], index=False)
         for ws in xw.book.worksheets:
             for col in ws.columns:
                 largeur = max(len(str(c.value or "")) for c in col)
@@ -240,6 +325,29 @@ def tableau_avec_apercu(df, pdf_ocr, colonnes, cle, libelle):
     ligne = df.iloc[lignes[0]] if lignes and lignes[0] < len(df) else df.iloc[0]
     st.image(apercu(pdf_ocr, int(ligne["Page"]), ligne["_boites"]),
              caption=f"Page {ligne['Page']} — « {ligne[libelle]} »", width="stretch")
+
+
+def voir_occurrences(occ, pdf_ocr, cle):
+    """Choix d'un élément trouvé → ses occurrences avec aperçu."""
+    if occ.empty:
+        return
+    choix = (occ["Groupe"] + " › " + occ["Élément"]).drop_duplicates().tolist()
+    sel = st.selectbox("Voir les occurrences de…", choix, index=None,
+                       placeholder="Choisir un élément trouvé", key=f"voir_{cle}")
+    if sel:
+        groupe, element = sel.split(" › ", 1)
+        vue = occ[(occ["Groupe"] == groupe) & (occ["Élément"] == element)] \
+            .sort_values("Page").reset_index(drop=True)
+        tableau_avec_apercu(vue, pdf_ocr, ["Page", "Valeur", "Confiance OCR (%)", "Contexte"],
+                            f"occ_{cle}_{sel}", "Valeur")
+
+
+def _titre(nom, synth, statut_ok):
+    n_ok = synth["Statut"].str.startswith(statut_ok).sum()
+    n_ko = synth["Statut"].str.startswith(("❌", "⚠️")).sum()
+    n_vu = synth["Statut"].str.startswith("👁️").sum()
+    suffixe = (f" · ❌ {n_ko} manquant(s)" if n_ko else "") + (f" · 👁️ {n_vu} à vérifier" if n_vu else "")
+    return f"**{nom}** — {n_ok}/{len(synth)} trouvés{suffixe}"
 
 
 # ---------------------------------------------------------------- Interface
@@ -284,42 +392,76 @@ def afficher_recherche_ocr():
                        mime="application/pdf")
 
     st.divider()
-    onglet_auto, onglet_libre = st.tabs(["🧩 Repérage automatique", "🔎 Recherche libre"])
+    index = indexer_pages(mots)
+    pages_faibles = [p for p, _ in faibles]
+    res_admin = appliquer(index, motifs_administratifs())
+    res_tech = appliquer(index, motifs_elements())
+    detection, occ_fiches = detecter_fiches(appliquer(index, motifs_fiches()))
+    synth_admin = synthese_admin(res_admin, pages_faibles)
 
-    # --- Repérage automatique
-    with onglet_auto:
-        categories = st.pills(
-            "Catégories à repérer (motifs modifiables dans `core/motifs_cee.py`)",
-            list(MOTIFS), selection_mode="multi", default=list(MOTIFS), key="ocr_categories",
-        ) or []
-        if not categories:
-            st.info("Sélectionner au moins une catégorie.")
+    onglet_tech, onglet_admin, onglet_libre = st.tabs(
+        ["🔧 Technique par fiche", "📋 Administratif", "🔎 Recherche libre"])
+
+    # --- Technique par fiche
+    with onglet_tech:
+        st.subheader("Fiches détectées")
+        if detection.empty:
+            st.info("Aucun code fiche ni terme technique repéré.")
         else:
-            res_auto = reperer(mots, categories)
-            synth = synthese(res_auto, categories, [p for p, _ in faibles])
+            st.dataframe(detection, hide_index=True, width="stretch",
+                         column_order=["Fiche", "Libellé", "Détection", "Code (pages)",
+                                       "Termes trouvés", "Pages fiche"])
 
-            st.subheader("Synthèse")
-            st.dataframe(synth, hide_index=True, width="stretch")
-            st.download_button(
-                "📊 Exporter en Excel (synthèse + détail)",
-                export_excel(synth, res_auto, fichier.name),
-                file_name=fichier.name.rsplit(".", 1)[0] + "_reperage.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
+        detectees = detection[~detection["Détection"].str.startswith("⚪")]["Fiche"].tolist()
+        options = list(dict.fromkeys(list(FICHES) + detection["Fiche"].tolist()))
+        c1, c2 = st.columns([3, 1])
+        fiches = c1.multiselect("Fiches à contrôler", options, default=detectees, key=f"fiches_{cle}")
+        restreindre = c2.toggle("Limiter aux pages de la fiche", value=True,
+                                help="Ne retient que les valeurs trouvées sur les pages où le code "
+                                     "ou les termes de la fiche apparaissent. Le domaine RGE, l'ACERMI "
+                                     "et le tableau de répartition sont toujours cherchés partout.")
 
-            st.subheader("Détail")
-            if res_auto.empty:
-                st.info("Aucun élément repéré.")
-            else:
-                elements = st.multiselect("Filtrer par élément",
-                                          sorted(res_auto["Élément"].unique()), key=f"filtre_{cle}")
-                vue = (res_auto[res_auto["Élément"].isin(elements)] if elements else res_auto)
-                vue = vue.sort_values(["Page", "Catégorie"]).reset_index(drop=True)
-                st.caption(f"{len(vue)} occurrence(s) — cliquer sur une ligne pour voir la page")
-                tableau_avec_apercu(
-                    vue, pdf_ocr,
-                    ["Page", "Catégorie", "Élément", "Valeur", "Confiance OCR (%)", "Contexte"],
-                    f"auto_{cle}_{len(vue)}", "Valeur")
+        checklists, occ_tech = [], []
+        for code in fiches:
+            if code not in FICHES:
+                st.info(f"**{code}** — pas de référentiel dans `core/motifs_cee.py` (ajouter la fiche dans FICHES).")
+                continue
+            ligne = detection[detection["Fiche"] == code]
+            pages_fiche = ligne["_pages"].iloc[0] if len(ligne) else []
+            synth, occ = checklist_fiche(code, res_tech, pages_fiche, restreindre, pages_faibles)
+            checklists.append(synth.assign(Fiche=code))
+            occ_tech.append(occ)
+            with st.expander(_titre(f"{code} · {FICHES[code]['libelle']}", synth, "✅"),
+                             expanded=len(fiches) <= 2):
+                if not pages_fiche:
+                    st.caption("Fiche non détectée dans le document : recherche sur toutes les pages.")
+                elif restreindre:
+                    st.caption(f"Pages de la fiche : {', '.join(map(str, pages_fiche))}")
+                st.dataframe(synth, hide_index=True, width="stretch")
+
+        occ_tech = pd.concat(occ_tech) if occ_tech else res_tech.iloc[0:0]
+        voir_occurrences(occ_tech, pdf_ocr, f"tech_{cle}")
+
+    # --- Administratif
+    with onglet_admin:
+        for cat in ADMINISTRATIF:
+            synth = synth_admin[synth_admin["Catégorie"] == cat].drop(columns="Catégorie")
+            with st.expander(_titre(cat, synth, "✅")):
+                st.dataframe(synth, hide_index=True, width="stretch")
+        voir_occurrences(res_admin, pdf_ocr, f"admin_{cle}")
+
+    st.download_button(
+        "📊 Exporter en Excel (fiches, technique, administratif, détail)",
+        export_excel({
+            "Fiches détectées": detection,
+            "Technique": (pd.concat(checklists)[["Fiche"] + [c for c in checklists[0] if c != "Fiche"]]
+                          if checklists else pd.DataFrame()),
+            "Administratif": synth_admin,
+            "Détail": pd.concat([occ_tech, res_admin]).sort_values("Page"),
+        }),
+        file_name=fichier.name.rsplit(".", 1)[0] + "_reperage.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
 
     # --- Recherche libre
     with onglet_libre:
