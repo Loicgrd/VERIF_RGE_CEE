@@ -13,6 +13,7 @@ Motif administratif / élément :
     presence  : True = signalé ❌ s'il est absent (administratif uniquement)
     partout   : True = cherché dans tout le document, pas seulement sur les pages de la fiche
                 (document séparé : certificat RGE, ACERMI, tableau de répartition…)
+    surligner : False = repéré dans les tableaux mais pas surligné dans le PDF (ex. montants)
     note      : aide (optionnel)
 
 Les regex tolèrent les espaces et tirets parasites de l'OCR.
@@ -112,10 +113,10 @@ ADMINISTRATIF = {
         {"nom": "Date (en lettres)", "regex": rf"\b\d{{1,2}}(?:er)?\s+{MOIS}\s+\d{{4}}\b"},
         {"nom": "Mois + année seuls", "regex": rf"\b(?<!\d\s){MOIS}\s+\d{{4}}\b",
          "note": "Date sans jour : on retient le dernier jour du mois"},
-        {"nom": "Total HT", "presence": True,
+        {"nom": "Total HT", "presence": True, "surligner": False,
          "regex": r"\b(?:total|montant)\s+(?:g[ée]n[ée]ral\s+)?(?:HT|hors\s+taxes?)\b[^\n]{0,20}?\d[\d . ]*,\d{2}",
          "note": "Lien fort : tolérance 0,01 €"},
-        {"nom": "Montant (€)", "regex": r"\b\d{1,3}(?:[ . ]?\d{3})*,\d{2}\s?(?:€|EUR)"},
+        {"nom": "Montant (€)", "surligner": False, "regex": r"\b\d{1,3}(?:[ . ]?\d{3})*,\d{2}\s?(?:€|EUR)"},
         {"nom": "Avancement 100 %", "regex": r"\b100\s?%"},
     ],
     "Signatures / parties": [
@@ -319,3 +320,12 @@ def motifs_fiches():
 
 def element_partout(nom):
     return nom.startswith("Domaine RGE") or ELEMENTS.get(nom, {}).get("partout", False)
+
+
+@lru_cache(maxsize=None)
+def a_surligner(groupe, nom):
+    """False si le motif est exclu du PDF surligné (drapeau « surligner »: False)."""
+    for m in ADMINISTRATIF.get(groupe, []):
+        if m["nom"] == nom:
+            return m.get("surligner", True)
+    return ELEMENTS.get(nom, {}).get("surligner", True)
