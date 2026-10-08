@@ -1,17 +1,21 @@
 """
-Recherche OCR dans les PDF scannés — V1
+Recherche OCR dans les PDF scannés — V2
 - OCR local (Tesseract), sans IA externe
 - PDF cherchable téléchargeable (Ctrl+F)
 - Recherche exacte / floue avec page, contexte et aperçu surligné
 - Score de confiance OCR par page et par résultat
+- Repérage automatique des éléments CEE (motifs dans core/motifs_cee.py)
+  avec synthèse présent / absent et export Excel
 
 Dépendances :
-    pip install pytesseract pymupdf rapidfuzz pillow pandas
-    + Tesseract installé sur la machine avec le pack de langue 'fra'
+    requirements.txt : pytesseract pymupdf rapidfuzz pillow pandas openpyxl
+    packages.txt     : tesseract-ocr tesseract-ocr-fra
 """
 import hashlib
+import io
 import re
 import unicodedata
+from bisect import bisect_right
 
 import fitz  # PyMuPDF
 import pandas as pd
@@ -19,6 +23,8 @@ import pytesseract
 import streamlit as st
 from PIL import Image, ImageDraw
 from rapidfuzz import fuzz
+
+from core.motifs_cee import MOTIFS, motifs_compiles
 
 # Windows : décommenter et adapter le chemin si Tesseract n'est pas dans le PATH
 # pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
@@ -153,6 +159,89 @@ def apercu(pdf_bytes, num_page, boites, zoom=2):
     return Image.alpha_composite(img, calque)
 
 
+# ---------------------------------------------------------------- Repérage automatique
+
+def reperer(mots, categories):
+    """Applique les motifs des catégories choisies, page par page.
+    Les mots OCR sont joints par des espaces ; chaque match est ramené aux mots qu'il couvre."""
+    par_page = {}
+    for m in mots:
+        par_page.setdefault(m["page"], []).append(m)
+
+    motifs = [(c, m, rx) for c, m, rx in motifs_compiles() if c in categories]
+    resultats = []
+    for page, liste in par_page.items():
+        debuts, pos = [], 0
+        for m in liste:
+            debuts.append(pos)
+            pos += len(m["texte"]) + 1
+        texte = " ".join(m["texte"] for m in liste)
+
+        for cat, motif, rx in motifs:
+            for match in rx.finditer(texte):
+                i0 = bisect_right(debuts, match.start()) - 1
+                i1 = bisect_right(debuts, match.end() - 1)
+                sel = liste[i0:i1]
+                if not sel:
+                    continue
+                resultats.append({
+                    "Catégorie": cat,
+                    "Élément": motif["nom"],
+                    "Valeur": match.group(0).strip(),
+                    "Page": page,
+                    "Confiance OCR (%)": round(sum(m["conf"] for m in sel) / len(sel)),
+                    "Contexte": " ".join(m["texte"] for m in liste[max(0, i0 - 8):i1 + 8]),
+                    "_boites": [(m["x0"], m["y0"], m["x1"], m["y1"]) for m in sel],
+                })
+    return pd.DataFrame(resultats)
+
+
+def synthese(res, categories, pages_faibles):
+    """Une ligne par motif : nb d'occurrences, pages, statut présent / absent."""
+    lignes = []
+    for cat in categories:
+        for motif in MOTIFS[cat]:
+            occ = res[res["Élément"] == motif["nom"]] if not res.empty else res
+            pages = sorted(occ["Page"].unique()) if len(occ) else []
+            if len(occ):
+                statut = "✅ Présent"
+            elif motif.get("presence"):
+                statut = ("⚠️ Non trouvé (OCR faible p. " + ", ".join(map(str, pages_faibles)) + ")"
+                          if pages_faibles else "❌ Absent")
+            else:
+                statut = "—"
+            lignes.append({
+                "Catégorie": cat, "Élément": motif["nom"], "Statut": statut,
+                "Occurrences": len(occ), "Pages": ", ".join(map(str, pages)),
+                "Valeurs": " | ".join(occ["Valeur"].drop_duplicates().head(5)) if len(occ) else "",
+            })
+    return pd.DataFrame(lignes)
+
+
+def export_excel(synth, detail, nom_fichier):
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as xw:
+        synth.to_excel(xw, sheet_name="Synthèse", index=False)
+        detail.drop(columns="_boites", errors="ignore").to_excel(xw, sheet_name="Détail", index=False)
+        for ws in xw.book.worksheets:
+            for col in ws.columns:
+                largeur = max(len(str(c.value or "")) for c in col)
+                ws.column_dimensions[col[0].column_letter].width = min(max(10, largeur + 2), 60)
+            ws.freeze_panes = "A2"
+    buf.seek(0)
+    return buf.getvalue()
+
+
+def tableau_avec_apercu(df, pdf_ocr, colonnes, cle, libelle):
+    """Tableau cliquable + aperçu de la page avec la zone surlignée."""
+    sel = st.dataframe(df, hide_index=True, width="stretch", column_order=colonnes,
+                       on_select="rerun", selection_mode="single-row", key=cle)
+    lignes = sel.selection.rows
+    ligne = df.iloc[lignes[0]] if lignes and lignes[0] < len(df) else df.iloc[0]
+    st.image(apercu(pdf_ocr, int(ligne["Page"]), ligne["_boites"]),
+             caption=f"Page {ligne['Page']} — « {ligne[libelle]} »", width="stretch")
+
+
 # ---------------------------------------------------------------- Interface
 
 def afficher_recherche_ocr():
@@ -194,30 +283,60 @@ def afficher_recherche_ocr():
                        file_name=fichier.name.rsplit(".", 1)[0] + "_ocr.pdf",
                        mime="application/pdf")
 
-    # --- Recherche
     st.divider()
-    c1, c2, c3 = st.columns([3, 1, 1])
-    requete = c1.text_input("Rechercher", placeholder="ex. BAR-TH-171, n° SIRET, nom…")
-    mode = c2.radio("Mode", ["Floue", "Exacte"], horizontal=True)
-    seuil = c3.slider("Seuil flou (%)", 60, 100, 85, disabled=(mode == "Exacte"))
-    if not requete:
-        return
+    onglet_auto, onglet_libre = st.tabs(["🧩 Repérage automatique", "🔎 Recherche libre"])
 
-    res = rechercher(mots, requete, mode, seuil)
-    if res.empty:
-        st.info("Aucun résultat.")
-        return
+    # --- Repérage automatique
+    with onglet_auto:
+        categories = st.pills(
+            "Catégories à repérer (motifs modifiables dans `core/motifs_cee.py`)",
+            list(MOTIFS), selection_mode="multi", default=list(MOTIFS), key="ocr_categories",
+        ) or []
+        if not categories:
+            st.info("Sélectionner au moins une catégorie.")
+        else:
+            res_auto = reperer(mots, categories)
+            synth = synthese(res_auto, categories, [p for p, _ in faibles])
 
-    st.caption(f"{len(res)} résultat(s) — cliquer sur une ligne pour voir la page")
-    sel = st.dataframe(
-        res, hide_index=True, width="stretch",
-        column_order=["Page", "Trouvé", "Similarité (%)", "Confiance OCR (%)", "Contexte"],
-        on_select="rerun", selection_mode="single-row", key=f"res_{cle}",
-    )
-    lignes = sel.selection.rows
-    ligne = res.iloc[lignes[0]] if lignes and lignes[0] < len(res) else res.iloc[0]
-    st.image(apercu(pdf_ocr, int(ligne["Page"]), ligne["_boites"]),
-             caption=f"Page {ligne['Page']} — « {ligne['Trouvé']} »", width="stretch")
+            st.subheader("Synthèse")
+            st.dataframe(synth, hide_index=True, width="stretch")
+            st.download_button(
+                "📊 Exporter en Excel (synthèse + détail)",
+                export_excel(synth, res_auto, fichier.name),
+                file_name=fichier.name.rsplit(".", 1)[0] + "_reperage.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+
+            st.subheader("Détail")
+            if res_auto.empty:
+                st.info("Aucun élément repéré.")
+            else:
+                elements = st.multiselect("Filtrer par élément",
+                                          sorted(res_auto["Élément"].unique()), key=f"filtre_{cle}")
+                vue = (res_auto[res_auto["Élément"].isin(elements)] if elements else res_auto)
+                vue = vue.sort_values(["Page", "Catégorie"]).reset_index(drop=True)
+                st.caption(f"{len(vue)} occurrence(s) — cliquer sur une ligne pour voir la page")
+                tableau_avec_apercu(
+                    vue, pdf_ocr,
+                    ["Page", "Catégorie", "Élément", "Valeur", "Confiance OCR (%)", "Contexte"],
+                    f"auto_{cle}_{len(vue)}", "Valeur")
+
+    # --- Recherche libre
+    with onglet_libre:
+        c1, c2, c3 = st.columns([3, 1, 1])
+        requete = c1.text_input("Rechercher", placeholder="ex. BAR-TH-171, n° SIRET, nom…")
+        mode = c2.radio("Mode", ["Floue", "Exacte"], horizontal=True)
+        seuil = c3.slider("Seuil flou (%)", 60, 100, 85, disabled=(mode == "Exacte"))
+        if requete:
+            res = rechercher(mots, requete, mode, seuil)
+            if res.empty:
+                st.info("Aucun résultat.")
+            else:
+                st.caption(f"{len(res)} résultat(s) — cliquer sur une ligne pour voir la page")
+                tableau_avec_apercu(
+                    res, pdf_ocr,
+                    ["Page", "Trouvé", "Similarité (%)", "Confiance OCR (%)", "Contexte"],
+                    f"res_{cle}", "Trouvé")
 
 
 if __name__ == "__main__":
