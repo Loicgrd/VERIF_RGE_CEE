@@ -32,7 +32,7 @@ import streamlit as st
 from PIL import Image, ImageDraw
 from rapidfuzz import fuzz
 
-from core.motifs_cee import (ADMINISTRATIF, ELEMENTS, FICHES, PREUVES, element_partout, motifs_administratifs,
+from core.motifs_cee import (ADMINISTRATIF, ELEMENTS, FICHES, PREUVES, a_surligner, element_partout, motifs_administratifs,
                              motifs_elements, motifs_fiches, normaliser_code)
 
 # Windows : décommenter et adapter le chemin si Tesseract n'est pas dans le PATH
@@ -360,6 +360,42 @@ def export_excel(feuilles):
     return buf.getvalue()
 
 
+COULEURS = {  # RGB 0-1 (surlignage PDF) + hex (légende)
+    "Administratif": ((0.45, 0.70, 1.00), "#73B3FF"),
+    "Technique": ((0.45, 0.90, 0.40), "#73E666"),
+}
+
+
+def pdf_surligne(pdf_ocr, volets):
+    """Ajoute une annotation de surlignage par occurrence.
+    volets : {nom du volet: DataFrame d'occurrences (Groupe, Élément, Valeur, Page, _boites)}.
+    Le libellé de l'élément apparaît en info-bulle au survol dans le lecteur PDF."""
+    doc = fitz.open(stream=pdf_ocr, filetype="pdf")
+    for volet, occ in volets.items():
+        couleur = COULEURS[volet][0]
+        # Une même zone repérée par plusieurs motifs → un seul surlignage, libellés fusionnés
+        zones = {}
+        for o in occ.to_dict("records"):
+            if not a_surligner(o["Groupe"], o["Élément"]):
+                continue
+            cle = (o["Page"], tuple(o["_boites"]))
+            zones.setdefault(cle, []).append(f"{o['Groupe']} › {o['Élément']}")
+        for (num, boites), libelles in zones.items():
+            page = doc[num - 1]
+            rects = [fitz.Rect(b) * page.derotation_matrix for b in boites]
+            annot = page.add_highlight_annot(rects)
+            annot.set_colors(stroke=couleur)
+            annot.set_info(title=volet, content="\n".join(dict.fromkeys(libelles)))
+            annot.update(opacity=0.5)
+    return doc.tobytes(garbage=3, deflate=True)
+
+
+def legende(volets):
+    return " ".join(
+        f"<span style='background:{COULEURS[v][1]};padding:2px 8px;border-radius:4px;"
+        f"color:#000'>{v}</span>" for v in volets)
+
+
 def tableau_avec_apercu(df, pdf_ocr, colonnes, cle, libelle):
     """Tableau cliquable + aperçu de la page avec la zone surlignée."""
     sel = st.dataframe(df, hide_index=True, width="stretch", column_order=colonnes,
@@ -430,11 +466,6 @@ def afficher_recherche_ocr():
         st.dataframe(pd.DataFrame(conf_pages, columns=["Page", "Confiance (%)", "Source"])
                      .round(0), hide_index=True)
 
-    st.download_button("📥 Télécharger le PDF cherchable (Ctrl+F)", pdf_ocr,
-                       file_name=fichier.name.rsplit(".", 1)[0] + "_ocr.pdf",
-                       mime="application/pdf")
-
-    st.divider()
     index = indexer_pages(mots)
     pages_faibles = [p for p, _ in faibles]
     res_admin = appliquer(index, motifs_administratifs())
@@ -442,8 +473,34 @@ def afficher_recherche_ocr():
     detection, occ_fiches = detecter_fiches(appliquer(index, motifs_fiches()))
     synth_admin = synthese_admin(res_admin, pages_faibles)
 
+    # --- PDF surligné (sortie principale)
+    st.divider()
+    st.subheader("🖍️ PDF surligné")
+    volets = st.pills("Éléments à surligner", list(COULEURS), selection_mode="multi",
+                      default=list(COULEURS), key="ocr_volets") or []
+    if volets:
+        st.markdown(legende(volets) + "&nbsp; — survoler un surlignage dans le lecteur PDF "
+                    "pour voir l'élément repéré (montants exclus).", unsafe_allow_html=True)
+    occ_technique = pd.concat([res_tech, occ_fiches[occ_fiches["Élément"] == "Terme"]
+                               .assign(Élément="Terme technique")])
+    cle_surl = (cle, tuple(volets))
+    if st.session_state.get("ocr_surligne_cle") != cle_surl:
+        with st.spinner("Surlignage…"):
+            st.session_state["ocr_surligne"] = pdf_surligne(pdf_ocr, {
+                v: {"Administratif": res_admin, "Technique": occ_technique}[v] for v in volets})
+        st.session_state["ocr_surligne_cle"] = cle_surl
+
+    base = fichier.name.rsplit(".", 1)[0]
+    c1, c2 = st.columns(2)
+    c1.download_button("📥 PDF surligné + cherchable", st.session_state["ocr_surligne"],
+                       file_name=base + "_surligne.pdf", mime="application/pdf", type="primary",
+                       disabled=not volets, width="stretch")
+    c2.download_button("📄 PDF cherchable seul (Ctrl+F)", pdf_ocr,
+                       file_name=base + "_ocr.pdf", mime="application/pdf", width="stretch")
+
+    st.divider()
     onglet_tech, onglet_admin, onglet_libre = st.tabs(
-        ["🔧 Technique par fiche", "📋 Administratif", "🔎 Recherche libre"])
+        ["🔧 Checklist par fiche", "📋 Administratif (tableaux)", "🔎 Recherche libre"])
 
     # --- Technique par fiche
     with onglet_tech:
