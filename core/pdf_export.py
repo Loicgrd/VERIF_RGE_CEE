@@ -44,6 +44,14 @@ _CHAR_REPLACEMENTS = {
     "\u2026": "...", # …
     "\u00a0": " ",   # espace insécable
     "\u2022": "-",   # puce •
+    # Comparateurs / exposants : "≥" n'est pas en Latin-1 (devenait "?") et "²"
+    # n'est pas rendu dans l'apparence des champs AcroForm (disparaissait).
+    "\u2265": ">=",  # ≥
+    "\u2264": "<=",  # ≤
+    "\u00b2": "2",   # ²
+    "\u00b3": "3",   # ³
+    "\u0153": "oe",  # œ (maître d'œuvre, œillets...)
+    "\u0152": "OE",  # Œ
 }
 
 
@@ -151,11 +159,13 @@ def draw_summary_page(c: canvas.Canvas, batiment, scenarios, scenario_choisi_id:
     chosen = next((s for s in scenarios if s.id == scenario_choisi_id), None)
     if chosen:
         band_y = PAGE_H - MARGIN - 44
+        band_txt = _clean(f"SCENARIO RETENU : {chosen.nom.replace(chr(10), ' ')}")
+        band_w = min(stringWidth(band_txt, "Helvetica-Bold", 10) + 16, PAGE_W - 2 * MARGIN)
         c.setFillColor(COL_HILITE_BORDER)
-        c.roundRect(MARGIN, band_y - 14, 260, 20, 3, fill=1, stroke=0)
+        c.roundRect(MARGIN, band_y - 14, band_w, 20, 3, fill=1, stroke=0)
         c.setFillColor(colors.white)
         c.setFont("Helvetica-Bold", 10)
-        c.drawString(MARGIN + 8, band_y - 8, _clean(f"SCENARIO RETENU : {chosen.nom.replace(chr(10), ' ')}"))
+        c.drawString(MARGIN + 8, band_y - 8, band_txt)
 
     # Tableau comparatif
     headers = ["Scénario", "CEP avant", "CEP après", "CEF avant", "CEF après",
@@ -186,6 +196,9 @@ def draw_summary_page(c: canvas.Canvas, batiment, scenarios, scenario_choisi_id:
     for ridx, sc in enumerate(scenarios):
         derniere = sc.etapes[-1] if sc.etapes else None
         is_chosen = sc.id == scenario_choisi_id
+        n_lines_nom = min(3, len(_wrap_text(None, sc.nom.replace("\n", " "),
+                                            "Helvetica-Bold", 7.5, col_w - 6)))
+        row_h = max(16, n_lines_nom * 8.5 + 7)
         row_top = y
         row_bottom = y - row_h
 
@@ -217,7 +230,7 @@ def draw_summary_page(c: canvas.Canvas, batiment, scenarios, scenario_choisi_id:
         c.setFillColor(colors.HexColor("#1F1F1F"))
         for i, v in enumerate(vals):
             x = table_left + i * col_w
-            _draw_wrapped(c, str(v), x + 3, row_top - 10, col_w - 6, c._fontname, 7.5, 8.5, 2)
+            _draw_wrapped(c, str(v), x + 3, row_top - 10, col_w - 6, c._fontname, 7.5, 8.5, 3)
 
         c.setStrokeColor(COL_BORDER)
         c.setLineWidth(0.5)
@@ -320,14 +333,16 @@ def draw_fiche_page(c: canvas.Canvas, batiment, scenario, all_travaux: list[dict
     #     pré-remplis à l'identique par défaut mais à ajuster après chantier
     #     (fond jaune pâle). La hauteur de chaque ligne s'adapte à la longueur
     #     du texte (aucune coupe) ; le tableau passe à la page suivante si besoin.
-    col_nat_w = width * 0.24
-    col_carac_w = width * 0.20
+    # Les deux demi-tableaux (préco + réalisé) doivent tenir dans `width` :
+    # 0.22 + 0.19 + 0.09 = 0.50 par moitié (avant : 0.53 -> débordait de 6 %).
+    col_nat_w = width * 0.22
+    col_carac_w = width * 0.19
     col_qte_w = width * 0.09
     half = col_nat_w + col_carac_w + col_qte_w  # largeur d'un demi-tableau (préco / réalisé)
     col_widths = [col_nat_w, col_carac_w, col_qte_w]
     headers = ["Nature des travaux", "Caractéristiques techniques / Marque et référence", "Surface / Quantités"]
     section_bar_h = 14
-    subheader_h = 12
+    subheader_h = 18  # 2 lignes : les libellés longs sont renvoyés à la ligne
 
     def _draw_travaux_header(y_top: float) -> float:
         _section_header(c, "Travaux préconisés", left, y_top - section_bar_h, half)
@@ -340,7 +355,8 @@ def draw_fiche_page(c: canvas.Canvas, batiment, scenario, all_travaux: list[dict
         for _side0, x0 in ((0, left), (1, left + half)):
             x = x0
             for ci, cw in enumerate(col_widths):
-                c.drawString(x + 3, sub_y + 3, _clean(headers[ci]))
+                _draw_wrapped(c, headers[ci], x + 3, sub_y + subheader_h - 7, cw - 6,
+                              "Helvetica-Bold", 6.8, 7.5, 2)
                 c.setStrokeColor(COL_BORDER)
                 c.setLineWidth(0.4)
                 c.line(x, sub_y, x, sub_y + subheader_h)
@@ -456,19 +472,33 @@ def draw_fiche_page(c: canvas.Canvas, batiment, scenario, all_travaux: list[dict
         ent_bottom = _new_page_reset()
 
     sig_top = ent_bottom - 16
-    c.setFont("Helvetica-Bold", 8.5)
-    c.setFillColor(colors.HexColor("#1F1F1F"))
-    c.drawString(left, sig_top, "Signature bénéficiaire :")
-    c.drawString(left + width / 2, sig_top, "Signature maître d'œuvre :")
 
-    _field(c, f"{field_prefix}_nom_signataire_1", left, sig_top - 34, width / 2 - 20, 22,
-           tooltip="Nom, prénom et fonction du signataire (bénéficiaire)")
-    _field(c, f"{field_prefix}_nom_signataire_2", left + width / 2, sig_top - 34, width / 2 - 10, 22,
-           tooltip="Nom, prénom et fonction du signataire (maître d'œuvre)")
-    c.setFont("Helvetica", 6.5)
-    c.setFillColor(colors.HexColor("#7F7F7F"))
-    c.drawString(left, sig_top - 40, "Nom, prénom et fonction du signataire")
-    c.drawString(left + width / 2, sig_top - 40, "Nom, prénom et fonction du signataire")
+    # 3 signataires côte à côte : bénéficiaire / maître d'œuvre / BE auditeur.
+    # Le champ du BE est pré-rempli avec la raison sociale (+ SIREN) extraite de
+    # l'audit — reste éditable.
+    aud = getattr(batiment, "auditeur", None)
+    be_default = ""
+    if aud is not None:
+        be_default = " - ".join(
+            p for p in (aud.raison_sociale, f"SIREN {aud.siren}" if aud.siren else "") if p
+        )
+    signataires = [
+        ("Signature bénéficiaire :", "nom_signataire_1", "bénéficiaire", ""),
+        ("Signature maître d'œuvre :", "nom_signataire_2", "maître d'œuvre", ""),
+        ("Signature du BE ayant réalisé l'audit :", "nom_signataire_be", "bureau d'études auditeur", be_default),
+    ]
+    gap = 14
+    col_w = (width - 2 * gap) / 3
+    for i, (titre, key, role, default) in enumerate(signataires):
+        x = left + i * (col_w + gap)
+        c.setFont("Helvetica-Bold", 8.5)
+        c.setFillColor(colors.HexColor("#1F1F1F"))
+        c.drawString(x, sig_top, _clean(titre))
+        _field(c, f"{field_prefix}_{key}", x, sig_top - 34, col_w, 22,
+               value=default, tooltip=f"Nom, prénom et fonction du signataire ({role})")
+        c.setFont("Helvetica", 6.5)
+        c.setFillColor(colors.HexColor("#7F7F7F"))
+        c.drawString(x, sig_top - 40, "Nom, prénom et fonction du signataire")
 
 
 # ---------------------------------------------------------------------------
