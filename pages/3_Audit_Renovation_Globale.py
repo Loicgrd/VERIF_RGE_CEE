@@ -265,7 +265,10 @@ for tab, sc in zip(tabs, scenarios):
         colA, colB = st.columns(2)
 
         with colA:
-            if st.button(f"📄 Générer le PDF à envoyer au bailleur", key=f"genpdf_{sc.id}"):
+            if st.button(
+                "📄 Générer le PDF : récapitulatif des scénarios + liste des travaux/entreprises",
+                key=f"genpdf_{sc.id}",
+            ):
                 pdf_bytes = generate_fiche_pdf(batiment, scenarios, scenario_choisi_id=sc.id)
                 st.success(
                     "PDF généré : page 1 = récapitulatif des scénarios (scénario "
@@ -273,7 +276,7 @@ for tab, sc in zip(tabs, scenarios):
                     "avec champs remplissables numériquement."
                 )
                 st.download_button(
-                    "⬇️ Télécharger le PDF",
+                    "⬇️ Télécharger le PDF (récapitulatif + liste des travaux/entreprises)",
                     data=pdf_bytes,
                     file_name=f"Fiche_travaux_{sc.id}.pdf",
                     mime="application/pdf",
@@ -281,7 +284,10 @@ for tab, sc in zip(tabs, scenarios):
                 )
 
         with colB:
-            gen_excel = st.button(f"📥 Générer l'Excel pour « {sc.nom.strip()} »", key=f"gen_{sc.id}")
+            gen_excel = st.button(
+                f"📥 Générer l'Excel : liste des travaux/entreprises pour le {sc.nom.replace(chr(10), ' ').strip()}",
+                key=f"gen_{sc.id}",
+            )
 
         if gen_excel:
             if not TEMPLATE_PATH.exists():
@@ -344,7 +350,7 @@ for tab, sc in zip(tabs, scenarios):
 
                 st.success("Fichier généré.")
                 st.download_button(
-                    "⬇️ Télécharger le fichier Excel",
+                    "⬇️ Télécharger l'Excel (liste des travaux/entreprises)",
                     data=buf.getvalue(),
                     file_name=f"Liste_travaux_{sc.id}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
