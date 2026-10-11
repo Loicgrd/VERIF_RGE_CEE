@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import requests
 import io
 import zipfile
@@ -10,7 +10,8 @@ import os
 from streamlit_paste_button import paste_image_button
 
 # --- IMPORT DU NOUVEAU CERVEAU ---
-from core.rge_api import get_cee_options, fetch_ademe_data, extract_qualif_code, clean_url, fetch_gouv_data
+from core.rge_api import get_cee_options, fetch_ademe_data, clean_url, fetch_gouv_data
+from core.rge_validite import analyser_lignes, VALIDE, A_VERIFIER, EXPIRE
 from core.ia_extraction import analyze_documents
 
 
@@ -55,23 +56,38 @@ def get_gouv_data_cached(siret):
     return fetch_gouv_data(siret)
 
 @st.cache_data(show_spinner=False, ttl=3600)
-def get_ademe_data_cached(siret, force_local_flag):
-    """Met en cache les requêtes ADEME pendant 1h."""
-    return fetch_ademe_data(siret, force_local=force_local_flag)
+def get_ademe_api_cached(siret):
+    """Met en cache les réponses de l'API ADEME pendant 1h (les échecs ne sont pas mis en cache)."""
+    lignes, source, limite = fetch_ademe_data(siret, force_local=False)
+    if source != "api":
+        raise ConnectionError("API ADEME injoignable")
+    return lignes
+
+
+def get_ademe_data(siret, force_local_flag):
+    """(lignes, source, date_limite). Le secours local n'est jamais mis en cache."""
+    if not force_local_flag:
+        try:
+            return get_ademe_api_cached(siret), "api", None
+        except Exception:
+            pass
+    return fetch_ademe_data(siret, force_local=True)
 
 
 # --- SAISIE UTILISATEUR ---
 # Indispensable pour pouvoir modifier dynamiquement la date et le tableau
 if 'siret_rows' not in st.session_state:
     st.session_state.siret_rows = pd.DataFrame([{"SIRET": ""}], dtype=str)
-if 'date_eng_val' not in st.session_state:
-    st.session_state.date_eng_val = datetime.now()
+# Date extraite par l'IA : appliquée AVANT la création du widget (sinon Streamlit l'ignore)
+if 'date_eng_pending' in st.session_state:
+    st.session_state.date_eng = st.session_state.pop('date_eng_pending')
+if 'date_eng' not in st.session_state:
+    st.session_state.date_eng = date.today()
 
 c_date, c_upload = st.columns([1, 2])
 
 with c_date:
-    date_eng = st.date_input("Date d'engagement :", value=st.session_state.date_eng_val, format="DD/MM/YYYY")
-    st.session_state.date_eng_val = date_eng
+    date_eng = st.date_input("Date d'engagement :", key="date_eng", format="DD/MM/YYYY")
 
 with c_upload:
     # 1. Titre global placé au-dessus pour libérer de l'espace horizontal
@@ -129,13 +145,13 @@ with c_upload:
                     date_str = extracted_date_or_time.strftime('%d/%m/%Y')
                     st.warning(f"⚠️ Date d'engagement trouvée ({date_str}), mais aucun SIRET détecté.")
                     st.info("Veuillez saisir les numéros de SIRET manuellement pour continuer.")
-                    st.session_state.date_input_key = extracted_date_or_time
+                    st.session_state.date_eng_pending = extracted_date_or_time.date() if isinstance(extracted_date_or_time, datetime) else extracted_date_or_time
                     st.rerun()
                 else:
                     date_str = extracted_date_or_time.strftime('%d/%m/%Y')
                     st.success(f"✅ {len(extracted_sirets)} SIRET(s) et date du {date_str} extraits avec succès !")
                     st.session_state.siret_rows = pd.DataFrame([{"SIRET": s} for s in extracted_sirets])
-                    st.session_state.date_input_key = extracted_date_or_time 
+                    st.session_state.date_eng_pending = extracted_date_or_time.date() if isinstance(extracted_date_or_time, datetime) else extracted_date_or_time 
                     st.rerun()
 
 # Affichage du tableau de SIRETs éditable
@@ -161,167 +177,22 @@ if st.button("🔍 Analyser les SIRET", type="primary"):
                 # 1. Requête API Gouvernement (Mise en cache)
                 gouv_data = get_gouv_data_cached(s)
                 
-                # 2. Requête API ADEME (Mise en cache)
-                api_lines = get_ademe_data_cached(s, force_local)
-                
+                # 2. Requête API ADEME (secours local si injoignable)
+                api_lines, source, date_limite = get_ademe_data(s, force_local)
+
                 if api_lines:
-                    # ---> L'ENTREPRISE EST RGE
                     nom_ent = gouv_data.get("nom") if gouv_data.get("trouve") else (api_lines[0].get('nom_entreprise') or api_lines[0].get('raison_sociale') or "Inconnu")
-                    domaines_raw = {}
-                    for line in api_lines:
-                        dom = str(line.get('domaine', 'Inconnu')).strip()
-                        lien_debut = line.get('lien_date_debut')
-                        lien_fin = line.get('lien_date_fin') or line.get('date_fin')
-                        tech_debut = line.get('date_debut') or line.get('lien_date_debut')
-                        
-                        if lien_debut and lien_fin:
-                            try:
-                                d_lien_debut = datetime.strptime(lien_debut[:10], '%Y-%m-%d').date()
-                                d_lien_fin = datetime.strptime(lien_fin[:10], '%Y-%m-%d').date()
-                                d_tech_debut = datetime.strptime(tech_debut[:10], '%Y-%m-%d').date()
-                                
-                                # --- NOUVEAU : On récupère la date de fin technique de la ligne ---
-                                tech_fin_str = line.get('date_fin')
-                                d_tech_fin = datetime.strptime(tech_fin_str[:10], '%Y-%m-%d').date() if tech_fin_str else d_lien_fin
-
-
-                                if dom not in domaines_raw:
-                                    domaines_raw[dom] = []
-                                domaines_raw[dom].append({
-                                    "n_certif": extract_qualif_code(line.get('_id', "N/A")),
-                                    "debut": d_lien_debut,
-                                    "fin": d_lien_fin,
-                                    "lien_debut_regle": d_lien_debut,
-                                    "tech_debut_score": d_tech_debut,
-                                    "tech_fin_score": d_tech_fin, # Ajouté ici
-                                    "url": clean_url(line.get('url_qualification') or line.get('lien_certificat')),
-                                    "organisme": str(line.get('organisme', '')).lower().strip() 
-                                })
-                            except:
-                                continue
-                                
-                        # --- QUALIBAT : calcul d'une "fin réelle" par cycle ---
-                        # lien_date_fin (= 'fin') est la fin THÉORIQUE du cycle de qualification,
-                        # partagée par toutes les lignes du même cycle. Elle n'est fiable que si
-                        # aucun cycle suivant ne la contredit (= ne démarre pas avant elle).
-                        # Si un cycle suivant démarre avant cette fin théorique, c'est la preuve que
-                        # la qualification a été interrompue avant son terme : on se rabat alors sur
-                        # le dernier 'tech_fin_score' (date_fin réelle) observé pour ce cycle.
-                        for dom, periodes in domaines_raw.items():
-                            if not periodes or periodes[0].get('organisme') != 'qualibat':
-                                continue
-                            # Regroupement par cycle (identifié par sa fin théorique partagée)
-                            cycles = {}
-                            for p in periodes:
-                                cycles.setdefault(p['fin'], []).append(p)
-                            cycles_tries = sorted(cycles.items(), key=lambda kv: min(x['lien_debut_regle'] for x in kv[1]))
-                            for idx, (fin_theorique, lignes_cycle) in enumerate(cycles_tries):
-                                cycle_suivant_debut = None
-                                if idx + 1 < len(cycles_tries):
-                                    cycle_suivant_debut = min(x['lien_debut_regle'] for x in cycles_tries[idx + 1][1])
-                                if cycle_suivant_debut and cycle_suivant_debut <= fin_theorique:
-                                    # Chevauchement détecté : la fin théorique n'a jamais été atteinte
-                                    fin_reelle = max(x['tech_fin_score'] for x in lignes_cycle)
-                                else:
-                                    # Pas de contradiction : la fin théorique est fiable
-                                    fin_reelle = fin_theorique
-                                for p in lignes_cycle:
-                                    p['fin_reelle'] = fin_reelle
-
-                        domaines_finaux = {}
-                        for dom, periodes in domaines_raw.items():
-                        
-                            # 1. On cherche en priorité les lignes où l'engagement est stricto sensu dans la période de qualification technique
-                            lignes_strictes = [p for p in periodes if p.get('tech_fin_score') and p['tech_debut_score'] <= date_eng <= p['tech_fin_score']]
-                            
-                            if lignes_strictes:
-                                meilleure_ligne = min(lignes_strictes, key=lambda x: (date_eng - x['tech_debut_score']).days)
-                                status = True
-                                
-                            else:
-                                # 2. Fallback : on regarde la validité globale du lien PDF
-                                # ⚠️ QUALIBAT : on utilise 'fin_reelle' calculée par cycle (voir plus haut),
-                                # qui vaut lien_date_fin si non contredite par un cycle suivant, sinon la
-                                # date_fin réelle du dernier snapshot du cycle.
-                                organisme_dom = periodes[0].get('organisme', '') if periodes else ''
-                                if organisme_dom == 'qualibat':
-                                    lignes_valides = [p for p in periodes if p['lien_debut_regle'] <= date_eng <= p.get('fin_reelle', p['fin'])]
-                                else:
-                                    lignes_valides = [p for p in periodes if p['lien_debut_regle'] <= date_eng <= p['fin']]
-                                
-                                if lignes_valides:
-                                    # On privilégie les lignes passées
-                                    lignes_passees = [p for p in lignes_valides if p['tech_debut_score'] <= date_eng]
-                                    if lignes_passees:
-                                        meilleure_ligne = min(lignes_passees, key=lambda x: (date_eng - x['tech_debut_score']).days)
-                                    else:
-                                        # Sécurité ultime
-                                        meilleure_ligne = min(lignes_valides, key=lambda x: abs((x['tech_debut_score'] - date_eng).days))
-                                    status = True
-                                    
-                                else:
-                                    # 3. Aucun certificat valide à cette date : l'entreprise est expirée pour ce domaine
-                                    meilleure_ligne = max(periodes, key=lambda x: x['fin'])
-                                    status = False
-                                    
-
-                            
-
-                            # QUALIBAT : surcharge de l'URL avec le certificat le plus récent
-                            organisme = periodes[0].get('organisme', '') if periodes else ''
-                            if organisme == 'qualibat' and status:
-                                # On réutilise la même logique de fusion que pour l'affichage
-                                hist_trie = sorted(periodes, key=lambda x: x['lien_debut_regle'])
-                                blocs_qualibat = []
-                                bloc_actuel = {
-                                    "debut": hist_trie[0]['lien_debut_regle'],
-                                    "fin": hist_trie[0].get('tech_fin_score', hist_trie[0]['fin']),
-                                    "periodes": [hist_trie[0]]
-                                }
-                                for p in hist_trie[1:]:
-                                    if p['lien_debut_regle'] <= bloc_actuel['fin'] + timedelta(days=0):
-                                        bloc_actuel['fin'] = max(bloc_actuel['fin'], p.get('tech_fin_score', p['fin']))
-                                        bloc_actuel['periodes'].append(p)
-                                    else:
-                                        blocs_qualibat.append(bloc_actuel)
-                                        bloc_actuel = {
-                                            "debut": p['lien_debut_regle'],
-                                            "fin": p.get('tech_fin_score', p['fin']),
-                                            "periodes": [p]
-                                        }
-                                blocs_qualibat.append(bloc_actuel)
-
-                                # On identifie le bloc qui contient date_eng
-                                bloc_cible = next((b for b in blocs_qualibat if b['debut'] <= date_eng <= b['fin']), None)
-                                if bloc_cible:
-                                    # Parmi les périodes de ce bloc, on prend le certificat le plus récent
-                                    plus_recent = max(bloc_cible['periodes'], key=lambda x: x.get('tech_fin_score', x['fin']))
-                                    meilleure_ligne = {**meilleure_ligne, "url": plus_recent['url']}
-
-                            # ---> C'EST ICI LA CORRECTION : On réinjecte bien tes clés status_rge et historique
-                            domaines_finaux[dom] = {
-                                **meilleure_ligne, 
-                                "status_rge": status,
-                                "historique": periodes
-                            }
-
-                    all_results.append({
-                        "SIRET": s, 
-                        "Entreprise": nom_ent, 
-                        "Domaines": domaines_finaux,
-                        "is_rge": True,
-                        "gouv_data": gouv_data
-                    })
                 else:
-                    # ---> L'ENTREPRISE N'EST PAS RGE (ou introuvable)
                     nom_ent = gouv_data.get("nom") if (gouv_data.get("trouve") or gouv_data.get("erreur_siret")) else "Introuvable"
-                    all_results.append({
-                        "SIRET": s, 
-                        "Entreprise": nom_ent, 
-                        "Domaines": {},
-                        "is_rge": False,
-                        "gouv_data": gouv_data
-                    })
+                all_results.append({
+                    "SIRET": s,
+                    "Entreprise": nom_ent,
+                    "lignes": api_lines,
+                    "source": source,
+                    "date_limite": date_limite,
+                    "is_rge": bool(api_lines),
+                    "gouv_data": gouv_data
+                })
 
         if not all_results:
             st.error("❌ Aucun résultat trouvé pour le(s) SIRET saisis.")
@@ -412,97 +283,79 @@ if 'audit_results' in st.session_state:
                 continue # On passe au SIRET suivant
 
             # ---> CAS 2 : ENTREPRISE RGE
+            # Statut recalculé à chaque affichage avec la date d'engagement COURANTE
+            domaines = analyser_lignes(res['lignes'], date_eng, res.get('date_limite'))
+
+            if res.get('source') == 'local':
+                lim = res.get('date_limite')
+                st.warning(f"🗄️ Base ADEME injoignable ou mode local : données de la sauvegarde du "
+                           f"{lim.strftime('%d/%m/%Y') if lim else 'date inconnue'}. "
+                           f"Toute date d'engagement postérieure est « À vérifier ».")
+
+            if gouv.get('date_fermeture'):
+                try:
+                    d_ferm_gouv = datetime.strptime(gouv['date_fermeture'], '%Y-%m-%d').date()
+                    if d_ferm_gouv < date_eng:
+                        st.error(f"🔴 Cet établissement était fermé à la date d'engagement (fermé le {d_ferm_gouv.strftime('%d/%m/%Y')}).")
+                except ValueError:
+                    pass
+
+            LIBELLES = {VALIDE: "Valide", A_VERIFIER: "À vérifier", EXPIRE: "Expiré"}
             graph_data = []
-            for d, info in res.get('Domaines', {}).items():
-                c_code = "#28a745" if info['status_rge'] else "#dc3545"
-                for h in info['historique']:
-                    is_valide = h['lien_debut_regle'] <= date_eng <= h['fin'] if 'lien_debut_regle' in h else h['debut'] <= date_eng <= h['fin']
+            for d, info in domaines.items():
+                c_code = {VALIDE: "#28a745", A_VERIFIER: "#fd7e14", EXPIRE: "#dc3545"}[info['statut']]
+                for deb, fin in info['intervalles']:
                     graph_data.append({
-                        "Domaine": f"<span style='color:{c_code}'>{d}</span>", 
-                        "Début": h['debut'], 
-                        "Fin": h['fin'], 
-                        "Statut": "Valide" if is_valide else "Expiré"
+                        "Domaine": f"<span style='color:{c_code}'>{d}</span>",
+                        "Début": deb,
+                        "Fin": min(fin, date.today() + timedelta(days=3650)),
+                        "Statut": "Valide" if deb <= date_eng <= fin else "Hors période"
                     })
 
-            liste_doms = list(res.get('Domaines', {}).keys())
+            liste_doms = list(domaines.keys())
             nb_key = f"nb_{res['SIRET']}"
             if nb_key not in st.session_state: st.session_state[nb_key] = 1
 
+            if not liste_doms:
+                st.error("❌ Lignes ADEME présentes mais inexploitables (dates manquantes) : vérifier manuellement.")
+
             for i in range(st.session_state[nb_key]):
                 c1, c2, c3, c4, c5, c6, c7 = st.columns([1.5, 0.8, 1.2, 0.8, 1.2, 1.0, 0.5])
-                
+
                 # S'assurer qu'il y a bien des domaines pour éviter une erreur
                 if liste_doms:
                     with c1: dom_sel = st.selectbox(f"D{i}", options=liste_doms, key=f"s_{res['SIRET']}_{i}", label_visibility="collapsed")
-                    
-                    info = res['Domaines'][dom_sel]
-                    
-                    
-                    
-                    debut_affiche = info['debut']
-                    fin_affiche = info['fin']
 
-                    # 1. On calcule les blocs globaux dans TOUS les cas (Valide comme Expiré)
-                    # ⚠️ QUALIBAT : lien_date_fin est la fin du cycle entier → on fusionne sur la
-                    # date_fin réelle (tech_fin_score) pour ne pas écraser les trous.
-                    organisme_aff = info['historique'][0].get('organisme', '') if info['historique'] else ''
-                    def fin_ligne(h):
-                        if organisme_aff == 'qualibat':
-                            return h.get('fin_reelle', h['fin'])
-                        return h['fin']
+                    info = domaines[dom_sel]
+                    statut = info['statut']
+                    debut_affiche, fin_affiche = info['debut'], info['fin']
 
-                    hist_trie = sorted(info['historique'], key=lambda x: x['lien_debut_regle'])
-                    blocs = []
-                    bloc_actuel = [hist_trie[0]['lien_debut_regle'], fin_ligne(hist_trie[0])]
-
-                    for h in hist_trie[1:]:
-                        if h['lien_debut_regle'] <= bloc_actuel[1] + timedelta(days=1):
-                            bloc_actuel[1] = max(bloc_actuel[1], fin_ligne(h))
-                        else:
-                            blocs.append(bloc_actuel)
-                            bloc_actuel = [h['lien_debut_regle'], fin_ligne(h)]
-                    blocs.append(bloc_actuel)
-
-                    # Vérification locale en temps réel par rapport à la date du calendrier
-                    est_valide_localement = False
-                    
-                    for b in blocs:
-                        if b[0] <= date_eng <= b[1]:
-                            debut_affiche = b[0]
-                            fin_affiche = b[1]
-                            est_valide_localement = True
-                            break
-                            
-                    if not est_valide_localement:
-                        bloc_le_plus_proche = min(
-                            blocs, 
-                            key=lambda b: min(abs(date_eng - b[0]), abs(date_eng - b[1]))
-                        )
-                        debut_affiche = bloc_le_plus_proche[0]
-                        fin_affiche = bloc_le_plus_proche[1]
-
-                    # Affichage dynamique du statut
                     with c2:
-                        if info['status_rge']: st.success("✅ Valide")
+                        if statut == VALIDE: st.success("✅ Valide")
+                        elif statut == A_VERIFIER: st.warning("⚠️ À vérifier")
                         else: st.error("❌ Expiré")
 
                     with c3:
-                        st.markdown(f"<div class='certif-info'><b>N° Certificat :</b> {info['n_certif']}<br><i>Début : {debut_affiche.strftime('%d/%m/%Y')}</i><br><i>Fin : {fin_affiche.strftime('%d/%m/%Y')}</i></div>", unsafe_allow_html=True)
+                        fin_txt = fin_affiche.strftime('%d/%m/%Y') if fin_affiche and fin_affiche.year < 9999 else "—"
+                        deb_txt = debut_affiche.strftime('%d/%m/%Y') if debut_affiche else "—"
+                        motif_html = f"<br><small>⚠️ {info['motif']}</small>" if info['motif'] else ""
+                        st.markdown(f"<div class='certif-info'><b>N° Certificat :</b> {info['n_certif']}<br><i>Début : {deb_txt}</i><br><i>Fin : {fin_txt}</i>{motif_html}</div>", unsafe_allow_html=True)
 
                     with c4: choix_bar = st.selectbox("F", options=get_cee_options(dom_sel), key=f"b_{res['SIRET']}_{dom_sel}_{i}", label_visibility="collapsed")
                     
                     with c5:
-                        if info['url']:
-                            st.link_button("👁️ Voir certificat", info['url'])
+                        url_cert = clean_url(info['url'])
+                        if url_cert:
+                            st.link_button("👁️ Voir certificat", url_cert)
                             try:
-                                content = get_pdf_content(info['url'])
+                                content = get_pdf_content(url_cert)
                                 
                                 if content:
                                     ent_clean = res['Entreprise'].replace(" ", "_").replace("/", "-")
-                                    ok_ko = "OK" if info['status_rge'] else "KO"
+                                    ok_ko = {VALIDE: "OK", A_VERIFIER: "A-VERIFIER", EXPIRE: "KO"}[statut]
                                     nom_indiv = f"{choix_bar}-RGE-{ok_ko} ({ent_clean}).pdf"
         
-                                    statut_txt = "VALIDE" if info['status_rge'] else "EXPIRE"
+                                    statut_txt = {VALIDE: "VALIDE", A_VERIFIER: "A-VERIFIER", EXPIRE: "EXPIRE"}[statut]
                                     nom_zip = f"{dom_sel}-{ent_clean}-{statut_txt}.pdf"
                                     st.download_button("📥 Télécharger", content, nom_indiv, "application/pdf", key=f"dl_{res['SIRET']}_{i}")
                                     files_to_zip.append({"content": content, "nom": nom_zip})
@@ -530,7 +383,8 @@ if 'audit_results' in st.session_state:
                     if show_g and graph_data:
                         df_g = pd.DataFrame(graph_data)
                         df_g["Début"], df_g["Fin"] = pd.to_datetime(df_g["Début"]), pd.to_datetime(df_g["Fin"])
-                        fig = px.timeline(df_g, x_start="Début", x_end="Fin", y="Domaine", color="Statut", color_discrete_map={"Valide": "#28a745", "Expiré": "#dee2e6"})
+                        fig = px.timeline(df_g, x_start="Début", x_end="Fin", y="Domaine", color="Statut", color_discrete_map={"Valide": "#28a745", "Hors période": "#dee2e6"})
+                        fig.update_traces(hovertemplate="<b>%{y}</b><br>Début : %{base|%d/%m/%Y}<br>Fin : %{x|%d/%m/%Y}<extra></extra>")
                         fig.add_vline(x=pd.to_datetime(date_eng).timestamp() * 1000, line_dash="dash", line_color="blue")
                         fig.update_layout(barcornerradius=10, height=max(180, (len(df_g["Domaine"].unique()) * 30) + 80), margin=dict(l=0, r=0, t=30, b=60),
                                           yaxis={'title': None, 'tickfont': {'size': 10}}, xaxis={'visible': True, 'tickfont': {'size': 9}},
@@ -566,7 +420,9 @@ if 'audit_results' in st.session_state:
                         "Certificat": info['n_certif'], 
                         "Date de début": debut_affiche,
                         "Date de fin": fin_affiche,
-                        "RGE": "Valide" if est_valide_localement else "Expiré"
+                        "RGE": LIBELLES[statut],
+                        "Motif": info['motif'],
+                        "Source": "ADEME (direct)" if res.get('source') == 'api' else f"Sauvegarde locale du {res['date_limite'].strftime('%d/%m/%Y') if res.get('date_limite') else '?'}"
                     })
 
     if excel_data:
@@ -606,7 +462,3 @@ if 'audit_results' in st.session_state:
             
             nom_fichier = f"Export_{date_eng}.xlsx"
             st.download_button("⬇️ Télécharger Excel", data=output.getvalue(), file_name=nom_fichier, width="stretch")
-
-
-
-
