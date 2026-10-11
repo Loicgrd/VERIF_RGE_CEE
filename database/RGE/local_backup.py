@@ -2,6 +2,7 @@ import pandas as pd
 import glob
 import os
 import streamlit as st
+from functools import lru_cache
 
 def fetch_local_backup(siret):
     siret = str(siret)
@@ -42,3 +43,17 @@ def fetch_local_backup(siret):
             continue
             
     return results
+
+
+@lru_cache(maxsize=1)
+def get_local_snapshot_date():
+    """Date de la sauvegarde locale = date de création de ligne la plus récente."""
+    dates = []
+    for file in glob.glob("database/RGE/rge_backup_part*.parquet"):
+        try:
+            col = pd.read_parquet(file, columns=['date_debut'])['date_debut'].astype(str).str[:10]
+            dates.append(pd.to_datetime(col, errors='coerce').max())
+        except Exception:
+            continue
+    dates = [d for d in dates if pd.notna(d)]
+    return max(dates).date() if dates else None
