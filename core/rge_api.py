@@ -10,7 +10,7 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 # On importe la fonction locale depuis le dossier database
-from database.RGE.local_backup import fetch_local_backup
+from database.RGE.local_backup import fetch_local_backup, get_local_snapshot_date
 
 MAP_CEE = {
 # --- ENVELOPPE (RGE Isolation / Menuiserie) ---
@@ -66,23 +66,37 @@ def get_cee_options(domaine):
         if key.lower() in dom_clean: return codes
     return ["RGE"]
 
+ADEME_URL = "https://data.ademe.fr/data-fair/api/v1/datasets/historique-rge/lines"
+
+
+def fetch_ademe_api(siret):
+    """Interroge l'API ADEME (toutes les pages). Lève une exception en cas d'échec."""
+    url = ADEME_URL
+    params = {"q": f"siret.exact:'{siret}'", "size": 1000}
+    lignes = []
+    for _ in range(20):  # garde-fou : 20 000 lignes max
+        r = requests.get(url, params=params, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        lignes.extend(data.get('results', []))
+        url, params = data.get('next'), None
+        if not url:
+            break
+    return lignes
+
+
 def fetch_ademe_data(siret, force_local=False):
-    url = f"https://data.ademe.fr/data-fair/api/v1/datasets/historique-rge/lines?q=siret.exact:'{siret}'&size=1000"
-    
-    if force_local:
-        st.info(f"🗄️ Mode local forcé pour le SIRET {siret}")
-        return fetch_local_backup(siret)
-        
-    try:
-        r = requests.get(url, timeout=4)
-        if r.status_code == 200:
-            return r.json().get('results', [])
-        else:
-            raise requests.exceptions.RequestException()
-    except (requests.exceptions.RequestException, Exception):
-        st.warning(f"⚠️ Mode secours : Base ADEME injoignable. Recherche locale pour le SIRET {siret}")
-        return fetch_local_backup(siret)
-    
+    """
+    Retourne (lignes, source, date_limite) :
+    - source = "api" ou "local"
+    - date_limite = date de la sauvegarde locale (None pour l'API, données à jour)
+    """
+    if not force_local:
+        try:
+            return fetch_ademe_api(siret), "api", None
+        except Exception:
+            pass
+    return fetch_local_backup(siret), "local", get_local_snapshot_date()
 
 
 def fetch_gouv_data(siret_cible):
